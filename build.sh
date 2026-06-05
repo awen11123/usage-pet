@@ -13,6 +13,7 @@ swiftc -O \
     Sources/I18n.swift \
     Sources/Notifier.swift \
     Sources/Cartoon.swift \
+    Sources/Activity.swift \
     Sources/ModelInfo.swift \
     Sources/Keychain.swift \
     Sources/Usage.swift \

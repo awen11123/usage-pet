@@ -191,6 +191,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var bobStart = Date()
     var bobPaused = false
     var currentMood: Mood = .happy
+    var activityState: ActivityState = .idle
+    var activityTimer: Timer?
     var claudeModel: String?                  // 缓存当前模型，避免每次悬停扫盘
     var codexModel: String?
     var currentSkin: Skin = Skins.byId(UserDefaults.standard.string(forKey: "skinId") ?? "dog")
@@ -234,6 +236,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.setFrameOrigin(petBase)
         panel.orderFront(nil)
         startBob()
+        startActivityWatch()
 
         if isClaude { ensureWeb() }
         startRefreshing()
@@ -267,17 +270,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !bobPaused else { return }
         let t = Date().timeIntervalSince(bobStart)
         let unit = Double(petScale)
-        // (振幅, 周期秒, 水平抖动幅度)：按心情区分节奏
+        // 活动状态优先(working/justDone)，否则按心情节奏
         let (amp, period, shake): (Double, Double, Double)
-        switch currentMood {
-        case .happy:   (amp, period, shake) = (unit * 0.6, 1.4, 0)         // 轻快
-        case .neutral: (amp, period, shake) = (unit * 0.4, 2.2, 0)         // 缓和呼吸
-        case .worried: (amp, period, shake) = (unit * 0.5, 1.3, 0)         // 略快
-        case .panic:   (amp, period, shake) = (unit * 0.7, 0.35, unit*0.3) // 高频+左右抖
+        switch activityState {
+        case .working:
+            // 工作中：快速点头 + 小幅左右晃(像在认真打字)
+            (amp, period, shake) = (unit * 0.45, 0.40, unit * 0.18)
+        case .justDone:
+            // 刚结束：大幅跳动(开心庆祝)
+            (amp, period, shake) = (unit * 0.95, 0.60, 0)
+        case .idle:
+            switch currentMood {
+            case .happy:   (amp, period, shake) = (unit * 0.6, 1.4, 0)
+            case .neutral: (amp, period, shake) = (unit * 0.4, 2.2, 0)
+            case .worried: (amp, period, shake) = (unit * 0.5, 1.3, 0)
+            case .panic:   (amp, period, shake) = (unit * 0.7, 0.35, unit*0.3)
+            }
         }
         let dy = sin(t * 2 * .pi / period) * amp
         let dx = shake > 0 ? Double.random(in: -shake...shake) : 0
         panel.setFrameOrigin(NSPoint(x: petBase.x + dx, y: petBase.y + dy))
+    }
+
+    /// 每 2 秒扫一次会话日志的修改时间，缓存活动状态(避免 30Hz 命中文件系统)
+    func startActivityWatch() {
+        activityTimer?.invalidate()
+        activityTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            self?.activityState = Activity.currentState()
+        }
     }
 
     // MARK: 刷新
