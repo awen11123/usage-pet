@@ -1,0 +1,17 @@
+# 构建产物 / build output
+ClaudePet.app/
+build/
+DerivedData/
+
+# 日志 / logs
+*.log
+~/.claude/claude-pet.log
+
+# macOS
+.DS_Store
+
+# 本地工具配置 / local tooling
+.claude/
+
+# 临时文件
+*.tmp
