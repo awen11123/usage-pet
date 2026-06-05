@@ -150,15 +150,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var relayErrors: [String: String] = [:]
     var currentSkin: Skin = Skins.byId(UserDefaults.standard.string(forKey: "skinId") ?? "dog")
 
-    // 数据源开关(默认只开 Claude)
-    var claudeEnabled: Bool {
-        get { UserDefaults.standard.object(forKey: "claudeEnabled") as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: "claudeEnabled") }
+    // 当前唯一数据源："claude" / "codex" / 中转账户 id（默认 Claude）
+    var activeSource: String {
+        get { UserDefaults.standard.string(forKey: "activeSource") ?? "claude" }
+        set { UserDefaults.standard.set(newValue, forKey: "activeSource") }
     }
-    var codexEnabled: Bool {
-        get { UserDefaults.standard.object(forKey: "codexEnabled") as? Bool ?? false }
-        set { UserDefaults.standard.set(newValue, forKey: "codexEnabled") }
-    }
+    var isClaude: Bool { activeSource == "claude" }
+    var isCodex: Bool { activeSource == "codex" }
+    var activeRelay: RelayAccount? { relayAccounts.first { $0.id == activeSource } }
 
     func applicationDidFinishLaunching(_ note: Notification) {
         NSApp.setActivationPolicy(.accessory)   // 不在 Dock 显示
@@ -179,7 +178,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         panel.orderFront(nil)
 
-        if claudeEnabled { ensureWeb() }
+        if isClaude { ensureWeb() }
         startRefreshing()
     }
 
@@ -194,8 +193,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// 只刷新当前选中的那一个数据源
     func refresh() {
-        if claudeEnabled {
+        if isClaude {
             ensureWeb()
             web?.fetchUsage { [weak self] result in
                 DispatchQueue.main.async {
@@ -207,8 +207,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.updateMood(); self.refreshBubbleIfVisible()
                 }
             }
-        }
-        if codexEnabled {
+        } else if isCodex {
             CodexUsage.fetch { [weak self] result in
                 DispatchQueue.main.async {
                     guard let self = self else { return }
@@ -219,9 +218,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.updateMood(); self.refreshBubbleIfVisible()
                 }
             }
-        }
-        // 中转 API
-        for acc in relayAccounts {
+        } else if let acc = activeRelay {
             RelayAPI.fetch(acc) { [weak self] result in
                 DispatchQueue.main.async {
                     guard let self = self else { return }
@@ -235,13 +232,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// 心情取已启用数据源中最紧张的用量
+    /// 心情取当前数据源的用量
     func updateMood() {
-        var vals: [Double] = []
-        if claudeEnabled, let s = snapshot   { vals.append(s.maxUtilization) }
-        if codexEnabled,  let s = codexSnap  { vals.append(s.maxUtilization) }
-        for acc in relayAccounts { if let u = relaySnaps[acc.id]?.usedPercent { vals.append(u) } }
-        petView.setMood(Mood.from(utilization: vals.max() ?? 0))
+        var v: Double = 0
+        if isClaude { v = snapshot?.maxUtilization ?? 0 }
+        else if isCodex { v = codexSnap?.maxUtilization ?? 0 }
+        else if let acc = activeRelay { v = relaySnaps[acc.id]?.usedPercent ?? 0 }
+        petView.setMood(Mood.from(utilization: v))
     }
 
     // MARK: 气泡
@@ -269,26 +266,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return String(repeating: "█", count: n) + String(repeating: "░", count: 10 - n)
     }
     func bubbleText() -> String {
-        var sections: [(title: String, lines: [String])] = []
-
-        if claudeEnabled {
-            var title = "◆ Claude"
-            if let m = ModelInfo.claude() { title += " · \(ModelInfo.pretty(m))" }
-            sections.append((title, claudeLines()))
+        let title: String, lines: [String]
+        if isClaude {
+            var t = "Claude"
+            if let m = ModelInfo.claude() { t += " · \(ModelInfo.pretty(m))" }
+            title = t; lines = claudeLines()
+        } else if isCodex {
+            var t = "Codex"
+            if let m = ModelInfo.codex() { t += " · \(ModelInfo.pretty(m))" }
+            title = t; lines = codexLines()
+        } else if let acc = activeRelay {
+            title = acc.name; lines = relayLines(acc)
+        } else {
+            return "未选择数据源\n右键 → 数据源"
         }
-        if codexEnabled {
-            var title = "◆ Codex"
-            if let m = ModelInfo.codex() { title += " · \(ModelInfo.pretty(m))" }
-            sections.append((title, codexLines()))
-        }
-        for acc in relayAccounts {
-            sections.append(("◆ \(acc.name)", relayLines(acc)))
-        }
-
-        if sections.isEmpty { return "未启用数据源\n右键 → 数据源 / 中转 API" }
-        return sections.map { sec in
-            ([sec.title] + sec.lines.map { "  " + $0 }).joined(separator: "\n")
-        }.joined(separator: "\n\n")
+        return ([title] + lines).joined(separator: "\n")
     }
 
     private func claudeLines() -> [String] {
@@ -356,35 +348,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         skinItem.submenu = skinMenu
         menu.addItem(skinItem)
 
-        // 数据源 子菜单
+        // 数据源 子菜单(单选)
         let srcItem = NSMenuItem(title: "数据源", action: nil, keyEquivalent: "")
         let srcMenu = NSMenu()
-        let cl = NSMenuItem(title: "Claude", action: #selector(menuToggleClaude), keyEquivalent: "")
-        cl.target = self; cl.state = claudeEnabled ? .on : .off
-        let cx = NSMenuItem(title: "Codex", action: #selector(menuToggleCodex), keyEquivalent: "")
-        cx.target = self; cx.state = codexEnabled ? .on : .off
+        let cl = NSMenuItem(title: "Claude", action: #selector(menuPickClaude), keyEquivalent: "")
+        cl.target = self; cl.state = isClaude ? .on : .off
+        let cx = NSMenuItem(title: "Codex", action: #selector(menuPickCodex), keyEquivalent: "")
+        cx.target = self; cx.state = isCodex ? .on : .off
         srcMenu.addItem(cl); srcMenu.addItem(cx)
-        srcItem.submenu = srcMenu
-        menu.addItem(srcItem)
-
-        // 中转 API 子菜单
-        let relayItem = NSMenuItem(title: "中转 API", action: nil, keyEquivalent: "")
-        let relayMenu = NSMenu()
-        relayMenu.addItem(withTitle: "添加中转 API…", action: #selector(menuAddRelay), keyEquivalent: "").target = self
         if !relayAccounts.isEmpty {
-            relayMenu.addItem(.separator())
+            srcMenu.addItem(.separator())
             for (i, acc) in relayAccounts.enumerated() {
-                let sub = NSMenu()
-                let del = NSMenuItem(title: "删除", action: #selector(menuRemoveRelay(_:)), keyEquivalent: "")
-                del.target = self; del.tag = i
-                sub.addItem(del)
-                let it = NSMenuItem(title: acc.name, action: nil, keyEquivalent: "")
-                it.submenu = sub
-                relayMenu.addItem(it)
+                let it = NSMenuItem(title: acc.name, action: #selector(menuPickRelay(_:)), keyEquivalent: "")
+                it.target = self; it.tag = i
+                it.state = (activeSource == acc.id) ? .on : .off
+                srcMenu.addItem(it)
             }
         }
-        relayItem.submenu = relayMenu
-        menu.addItem(relayItem)
+        srcMenu.addItem(.separator())
+        srcMenu.addItem(withTitle: "添加中转 API…", action: #selector(menuAddRelay), keyEquivalent: "").target = self
+        if !relayAccounts.isEmpty {
+            let delItem = NSMenuItem(title: "删除中转 API", action: nil, keyEquivalent: "")
+            let delMenu = NSMenu()
+            for (i, acc) in relayAccounts.enumerated() {
+                let it = NSMenuItem(title: acc.name, action: #selector(menuRemoveRelay(_:)), keyEquivalent: "")
+                it.target = self; it.tag = i
+                delMenu.addItem(it)
+            }
+            delItem.submenu = delMenu
+            srcMenu.addItem(delItem)
+        }
+        srcItem.submenu = srcMenu
+        menu.addItem(srcItem)
 
         menu.addItem(withTitle: "登录 / 重新登录 Claude…", action: #selector(menuLogin), keyEquivalent: "l").target = self
         let autoTitle = (SMAppService.mainApp.status == .enabled) ? "✓ 开机自启动" : "开机自启动"
@@ -395,15 +390,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     @objc func menuRefresh() { refresh() }
     @objc func menuLogin() { ensureWeb(); web?.showLogin() }
-    @objc func menuToggleClaude() {
-        claudeEnabled.toggle()
-        if !claudeEnabled { snapshot = nil; lastError = nil }
-        refresh(); updateMood(); refreshBubbleIfVisible()
+    private func switchSource(to id: String) {
+        guard activeSource != id else { return }
+        activeSource = id
+        if id == "claude" { ensureWeb() }
+        updateMood(); refreshBubbleIfVisible(); refresh()
     }
-    @objc func menuToggleCodex() {
-        codexEnabled.toggle()
-        if !codexEnabled { codexSnap = nil; codexError = nil }
-        refresh(); updateMood(); refreshBubbleIfVisible()
+    @objc func menuPickClaude() { switchSource(to: "claude") }
+    @objc func menuPickCodex()  { switchSource(to: "codex") }
+    @objc func menuPickRelay(_ sender: NSMenuItem) {
+        guard sender.tag < relayAccounts.count else { return }
+        switchSource(to: relayAccounts[sender.tag].id)
     }
     @objc func menuAddRelay() {
         let alert = NSAlert()
@@ -426,16 +423,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let u = url.stringValue.trimmingCharacters(in: .whitespaces)
         let k = key.stringValue.trimmingCharacters(in: .whitespaces)
         guard !n.isEmpty, !u.isEmpty, !k.isEmpty else { return }
-        relayAccounts.append(RelayAccount(name: n, baseURL: u, apiKey: k))
+        let acc = RelayAccount(name: n, baseURL: u, apiKey: k)
+        relayAccounts.append(acc)
         RelayStore.save(relayAccounts)
-        refresh(); refreshBubbleIfVisible()
+        switchSource(to: acc.id)   // 添加后自动切到它
     }
     @objc func menuRemoveRelay(_ sender: NSMenuItem) {
         guard sender.tag < relayAccounts.count else { return }
         let acc = relayAccounts.remove(at: sender.tag)
         relaySnaps[acc.id] = nil; relayErrors[acc.id] = nil
         RelayStore.save(relayAccounts)
-        updateMood(); refreshBubbleIfVisible()
+        if activeSource == acc.id { switchSource(to: "claude") }   // 删的是当前源则回退
+        else { refreshBubbleIfVisible() }
     }
     @objc func menuPickSkin(_ sender: NSMenuItem) {
         let s = Skins.all[sender.tag]

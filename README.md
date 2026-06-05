@@ -16,7 +16,8 @@ The more quota you burn, the more anxious the pet gets.
 - **Codex**（OpenAI Codex CLI 速率限额）
 - **中转 API / Relay**（one-api、new-api 等网关的 $ 余额，可加多个）
 
-每个用户可以**只开自己用的那个**（右键 → 数据源 / 中转 API）。
+**同一时刻只显示一个**数据源——右键 → 数据源 里单选 Claude / Codex / 某个中转，
+气泡和宠物心情都只反映选中的那一个，清爽不打扰。
 
 ---
 
@@ -40,12 +41,13 @@ cookie 读取，并让 WebKit 自动通过 Cloudflare 校验。
 本应用通过 `codex app-server` 的 JSON-RPC 接口 `account/rateLimits/read` 读取限额，
 不爬网页。若 codex 装在非标准路径，可设环境变量 `CLAUDEPET_CODEX_BIN=/path/to/codex`。
 
-> 默认只开启 Claude。要看 Codex，右键 → 数据源 → 勾选 Codex。
+> 默认选中 Claude。右键 → 数据源 单选切换到 Codex 或某个中转。
 
 **中转 API / Relay** — 给走第三方网关（one-api / new-api 等）的用户。右键 →
-中转 API → 添加，填名称、Base URL、API Key。应用调用 OpenAI 兼容的计费接口
-`/v1/dashboard/billing/subscription` 与 `/v1/dashboard/billing/usage` 计算
-「余额 = 总额度 − 已用」。可添加多个，配置存于 `~/.claude/claude-pet-relays.json`(权限 600)。
+数据源 → 添加中转 API…，填名称、Base URL、API Key（添加后自动切到它）。
+应用调用 OpenAI 兼容的计费接口 `/v1/dashboard/billing/subscription` 与
+`/v1/dashboard/billing/usage` 计算「余额 = 总额度 − 已用」。可添加多个，
+配置存于 `~/.claude/claude-pet-relays.json`(权限 600)。
 
 ### 构建运行
 ```bash
@@ -87,7 +89,8 @@ claude.ai (one-time; cookies persist). It then silently calls
 `account/rateLimits/read` — no scraping. For a non-standard path, set
 `CLAUDEPET_CODEX_BIN=/path/to/codex`.
 
-> Only Claude is enabled by default. Enable Codex via right-click → 数据源 (Sources).
+> Only **one** source is shown at a time. Pick it via right-click → 数据源 (Sources):
+> Claude / Codex / a relay. Bubble and pet mood reflect just that one.
 
 ### Build & run
 ```bash
