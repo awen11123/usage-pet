@@ -14,8 +14,9 @@ The more quota you burn, the more anxious the pet gets.
 
 - **Claude**（Claude Code / claude.ai 订阅额度）
 - **Codex**（OpenAI Codex CLI 速率限额）
+- **中转 API / Relay**（one-api、new-api 等网关的 $ 余额，可加多个）
 
-每个用户可以**只开自己用的那个**（右键 → 数据源）。
+每个用户可以**只开自己用的那个**（右键 → 数据源 / 中转 API）。
 
 ---
 
@@ -40,6 +41,11 @@ cookie 读取，并让 WebKit 自动通过 Cloudflare 校验。
 不爬网页。若 codex 装在非标准路径，可设环境变量 `CLAUDEPET_CODEX_BIN=/path/to/codex`。
 
 > 默认只开启 Claude。要看 Codex，右键 → 数据源 → 勾选 Codex。
+
+**中转 API / Relay** — 给走第三方网关（one-api / new-api 等）的用户。右键 →
+中转 API → 添加，填名称、Base URL、API Key。应用调用 OpenAI 兼容的计费接口
+`/v1/dashboard/billing/subscription` 与 `/v1/dashboard/billing/usage` 计算
+「余额 = 总额度 − 已用」。可添加多个，配置存于 `~/.claude/claude-pet-relays.json`(权限 600)。
 
 ### 构建运行
 ```bash
@@ -117,6 +123,8 @@ and `bubbleText()`. PRs for other AIs welcome.
 | `Sources/Usage.swift` | Claude 数据模型 |
 | `Sources/Web.swift`   | Claude WebKit 数据源(登录+取数) |
 | `Sources/Codex.swift` | Codex `app-server` RPC 数据源 |
+| `Sources/Relay.swift` | 中转 API 余额数据源(OpenAI 兼容计费接口) |
+| `Sources/ModelInfo.swift` | 从本地会话日志读当前模型 |
 | `Sources/App.swift`   | 悬浮窗 / 气泡 / 交互 / 菜单 |
 | `Sources/main.swift`  | 入口 |
 

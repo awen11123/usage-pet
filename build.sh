@@ -14,6 +14,7 @@ swiftc -O \
     Sources/ModelInfo.swift \
     Sources/Usage.swift \
     Sources/Codex.swift \
+    Sources/Relay.swift \
     Sources/Web.swift \
     Sources/App.swift \
     Sources/main.swift \

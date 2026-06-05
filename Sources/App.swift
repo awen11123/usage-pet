@@ -145,6 +145,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var web: ClaudeWeb?
     var codexSnap: CodexSnapshot?
     var codexError: String?
+    var relayAccounts: [RelayAccount] = RelayStore.load()
+    var relaySnaps: [String: RelaySnapshot] = [:]
+    var relayErrors: [String: String] = [:]
     var currentSkin: Skin = Skins.byId(UserDefaults.standard.string(forKey: "skinId") ?? "dog")
 
     // 数据源开关(默认只开 Claude)
@@ -217,6 +220,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+        // 中转 API
+        for acc in relayAccounts {
+            RelayAPI.fetch(acc) { [weak self] result in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    switch result {
+                    case .success(let snap): self.relayErrors[acc.id] = nil; self.relaySnaps[acc.id] = snap
+                    case .failure(let err):  self.relayErrors[acc.id] = err.localizedDescription
+                    }
+                    self.updateMood(); self.refreshBubbleIfVisible()
+                }
+            }
+        }
     }
 
     /// 心情取已启用数据源中最紧张的用量
@@ -224,6 +240,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var vals: [Double] = []
         if claudeEnabled, let s = snapshot   { vals.append(s.maxUtilization) }
         if codexEnabled,  let s = codexSnap  { vals.append(s.maxUtilization) }
+        for acc in relayAccounts { if let u = relaySnaps[acc.id]?.usedPercent { vals.append(u) } }
         petView.setMood(Mood.from(utilization: vals.max() ?? 0))
     }
 
@@ -252,43 +269,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return String(repeating: "█", count: n) + String(repeating: "░", count: 10 - n)
     }
     func bubbleText() -> String {
-        if !claudeEnabled && !codexEnabled { return "未启用数据源\n右键 → 数据源" }
-        let both = claudeEnabled && codexEnabled
-        let pad = both ? "  " : ""        // 双数据源时缩进并加标题
-        var lines: [String] = []
+        var sections: [(title: String, lines: [String])] = []
 
         if claudeEnabled {
-            let title = both ? "◆ Claude" : "◆ Claude"
-            if let m = ModelInfo.claude() { lines.append("\(title)  · \(ModelInfo.pretty(m))") }
-            else { lines.append(title) }
-            if let e = lastError {
-                lines.append("\(pad)⚠️ \(e)")
-            } else if let s = snapshot {
-                lines.append("\(pad)5小时 \(bar(s.fiveHour)) \(Int(s.fiveHour))%")
-                lines.append("\(pad)7天   \(bar(s.sevenDay)) \(Int(s.sevenDay))%")
-                if let o = s.opus    { lines.append("\(pad)Opus  \(bar(o)) \(Int(o))%") }
-                if let so = s.sonnet { lines.append("\(pad)Sonn. \(bar(so)) \(Int(so))%") }
-                if let r = countdown(fromISO: s.fiveHourResets) { lines.append("\(pad)重置 \(r)") }
-            } else {
-                lines.append("\(pad)加载中…")
-            }
+            var title = "◆ Claude"
+            if let m = ModelInfo.claude() { title += " · \(ModelInfo.pretty(m))" }
+            sections.append((title, claudeLines()))
         }
-
         if codexEnabled {
-            if both || claudeEnabled { lines.append("") }
             var title = "◆ Codex"
-            if let m = ModelInfo.codex() { title += "  · \(ModelInfo.pretty(m))" }
-            lines.append(title)
-            if let s = codexSnap {
-                if let f = s.fiveHour { lines.append("\(pad)5小时 \(bar(f)) \(Int(f))%") }
-                if let w = s.weekly   { lines.append("\(pad)周    \(bar(w)) \(Int(w))%") }
-                if let r = countdown(date: s.fiveHourResets) { lines.append("\(pad)重置 \(r)") }
-            } else {
-                lines.append("\(pad)\(codexError ?? "加载中…")")
-            }
+            if let m = ModelInfo.codex() { title += " · \(ModelInfo.pretty(m))" }
+            sections.append((title, codexLines()))
+        }
+        for acc in relayAccounts {
+            sections.append(("◆ \(acc.name)", relayLines(acc)))
         }
 
-        return lines.joined(separator: "\n")
+        if sections.isEmpty { return "未启用数据源\n右键 → 数据源 / 中转 API" }
+        return sections.map { sec in
+            ([sec.title] + sec.lines.map { "  " + $0 }).joined(separator: "\n")
+        }.joined(separator: "\n\n")
+    }
+
+    private func claudeLines() -> [String] {
+        if let e = lastError { return ["⚠️ \(e)"] }
+        guard let s = snapshot else { return ["加载中…"] }
+        var l = ["5小时 \(bar(s.fiveHour)) \(Int(s.fiveHour))%",
+                 "7天   \(bar(s.sevenDay)) \(Int(s.sevenDay))%"]
+        if let o = s.opus    { l.append("Opus  \(bar(o)) \(Int(o))%") }
+        if let so = s.sonnet { l.append("Sonn. \(bar(so)) \(Int(so))%") }
+        if let r = countdown(fromISO: s.fiveHourResets) { l.append("重置 \(r)") }
+        return l
+    }
+    private func codexLines() -> [String] {
+        guard let s = codexSnap else { return [codexError ?? "加载中…"] }
+        var l: [String] = []
+        if let f = s.fiveHour { l.append("5小时 \(bar(f)) \(Int(f))%") }
+        if let w = s.weekly   { l.append("周    \(bar(w)) \(Int(w))%") }
+        if let r = countdown(date: s.fiveHourResets) { l.append("重置 \(r)") }
+        return l.isEmpty ? ["无数据"] : l
+    }
+    private func relayLines(_ acc: RelayAccount) -> [String] {
+        if let e = relayErrors[acc.id] { return ["⚠️ \(e)"] }
+        guard let s = relaySnaps[acc.id] else { return ["加载中…"] }
+        func money(_ v: Double) -> String { String(format: "%.2f", v) }
+        var l: [String] = []
+        if let u = s.usedPercent { l.append("用量 \(bar(u)) \(Int(u))%") }
+        if let r = s.remaining, let t = s.total {
+            l.append("余 $\(money(r)) / $\(money(t))")
+        } else if let u = s.used {
+            l.append("已用 $\(money(u))")
+        }
+        return l.isEmpty ? ["无数据"] : l
     }
 
     private func countdown(fromISO iso: String?) -> String? {
@@ -335,6 +367,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         srcItem.submenu = srcMenu
         menu.addItem(srcItem)
 
+        // 中转 API 子菜单
+        let relayItem = NSMenuItem(title: "中转 API", action: nil, keyEquivalent: "")
+        let relayMenu = NSMenu()
+        relayMenu.addItem(withTitle: "添加中转 API…", action: #selector(menuAddRelay), keyEquivalent: "").target = self
+        if !relayAccounts.isEmpty {
+            relayMenu.addItem(.separator())
+            for (i, acc) in relayAccounts.enumerated() {
+                let sub = NSMenu()
+                let del = NSMenuItem(title: "删除", action: #selector(menuRemoveRelay(_:)), keyEquivalent: "")
+                del.target = self; del.tag = i
+                sub.addItem(del)
+                let it = NSMenuItem(title: acc.name, action: nil, keyEquivalent: "")
+                it.submenu = sub
+                relayMenu.addItem(it)
+            }
+        }
+        relayItem.submenu = relayMenu
+        menu.addItem(relayItem)
+
         menu.addItem(withTitle: "登录 / 重新登录 Claude…", action: #selector(menuLogin), keyEquivalent: "l").target = self
         let autoTitle = (SMAppService.mainApp.status == .enabled) ? "✓ 开机自启动" : "开机自启动"
         menu.addItem(withTitle: autoTitle, action: #selector(menuToggleAutoStart), keyEquivalent: "").target = self
@@ -353,6 +404,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         codexEnabled.toggle()
         if !codexEnabled { codexSnap = nil; codexError = nil }
         refresh(); updateMood(); refreshBubbleIfVisible()
+    }
+    @objc func menuAddRelay() {
+        let alert = NSAlert()
+        alert.messageText = "添加中转 API"
+        alert.informativeText = "填写中转服务的名称、Base URL 和 API Key。\n会查询 /v1/dashboard/billing 接口显示余额。"
+        alert.addButton(withTitle: "保存")
+        alert.addButton(withTitle: "取消")
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 96))
+        let name = NSTextField(frame: NSRect(x: 0, y: 66, width: 320, height: 24))
+        name.placeholderString = "名称（如：我的中转）"
+        let url = NSTextField(frame: NSRect(x: 0, y: 35, width: 320, height: 24))
+        url.placeholderString = "Base URL（如 https://api.example.com）"
+        let key = NSTextField(frame: NSRect(x: 0, y: 4, width: 320, height: 24))
+        key.placeholderString = "API Key（sk-…）"
+        v.addSubview(name); v.addSubview(url); v.addSubview(key)
+        alert.accessoryView = v
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let n = name.stringValue.trimmingCharacters(in: .whitespaces)
+        let u = url.stringValue.trimmingCharacters(in: .whitespaces)
+        let k = key.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !n.isEmpty, !u.isEmpty, !k.isEmpty else { return }
+        relayAccounts.append(RelayAccount(name: n, baseURL: u, apiKey: k))
+        RelayStore.save(relayAccounts)
+        refresh(); refreshBubbleIfVisible()
+    }
+    @objc func menuRemoveRelay(_ sender: NSMenuItem) {
+        guard sender.tag < relayAccounts.count else { return }
+        let acc = relayAccounts.remove(at: sender.tag)
+        relaySnaps[acc.id] = nil; relayErrors[acc.id] = nil
+        RelayStore.save(relayAccounts)
+        updateMood(); refreshBubbleIfVisible()
     }
     @objc func menuPickSkin(_ sender: NSMenuItem) {
         let s = Skins.all[sender.tag]
