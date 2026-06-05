@@ -9,9 +9,15 @@ struct RelayAccount: Codable, Identifiable {
 }
 
 struct RelaySnapshot {
-    var total: Double?      // 总额度 USD
-    var used: Double?       // 已用 USD
-    var remaining: Double? { guard let t = total, let u = used else { return nil }; return t - u }
+    var total: Double?           // 总额度
+    var used: Double?            // 已用
+    var remainingDirect: Double? // 接口直接给出的余额(如 DeepSeek)
+    var currency: String = "$"   // 货币符号
+    var remaining: Double? {
+        if let r = remainingDirect { return r }
+        guard let t = total, let u = used else { return nil }
+        return t - u
+    }
     var usedPercent: Double? {
         guard let t = total, t > 0, let u = used else { return nil }
         return max(0, min(100, u / t * 100))
@@ -42,27 +48,88 @@ enum RelayStore {
 enum RelayAPI {
     static func fetch(_ acc: RelayAccount, completion: @escaping (Result<RelaySnapshot, Error>) -> Void) {
         let base = normalize(acc.baseURL)
-        // 1) 订阅(总额度)
-        request("\(base)/v1/dashboard/billing/subscription", key: acc.apiKey) { r1 in
-            switch r1 {
-            case .failure(let e): completion(.failure(e))
-            case .success(let sub):
-                let total = (sub["hard_limit_usd"] as? Double)
-                    ?? (sub["hard_limit_usd"] as? NSNumber)?.doubleValue
-                // 2) 用量(已用，单位美分)
-                let end = ymd(Date().addingTimeInterval(86400))
-                let start = "2024-01-01"
-                request("\(base)/v1/dashboard/billing/usage?start_date=\(start)&end_date=\(end)", key: acc.apiKey) { r2 in
-                    var snap = RelaySnapshot()
-                    snap.total = total
-                    if case .success(let use) = r2 {
-                        if let cents = (use["total_usage"] as? Double) ?? (use["total_usage"] as? NSNumber)?.doubleValue {
-                            snap.used = cents / 100.0
-                        }
-                    }
-                    completion(.success(snap))
-                }
+        let org = origin(acc.baseURL)
+        let key = acc.apiKey
+        // 探测链：依次尝试各主流中转的余额格式，第一个成功的胜出
+        let probes: [(@escaping (RelaySnapshot?) -> Void) -> Void] = [
+            { cb in probeOneAPI(base, key, cb) },        // one-api / new-api
+            { cb in probeDeepSeek(org, key, cb) },       // DeepSeek
+            { cb in probeOpenRouter(org, key, cb) },     // OpenRouter
+            { cb in probeSiliconFlow(base, key, cb) },   // 硅基流动
+        ]
+        runProbes(probes, 0) { snap in
+            if let s = snap { completion(.success(s)) }
+            else { completion(.failure(RelayError.message("无法识别该中转的余额接口"))) }
+        }
+    }
+
+    private static func runProbes(_ probes: [(@escaping (RelaySnapshot?) -> Void) -> Void],
+                                  _ i: Int, _ done: @escaping (RelaySnapshot?) -> Void) {
+        if i >= probes.count { done(nil); return }
+        let probe = probes[i]
+        probe { snap in
+            if let s = snap { done(s) } else { runProbes(probes, i + 1, done) }
+        }
+    }
+
+    // one-api / new-api：/v1/dashboard/billing/subscription + /usage
+    private static func probeOneAPI(_ base: String, _ key: String, _ cb: @escaping (RelaySnapshot?) -> Void) {
+        get("\(base)/v1/dashboard/billing/subscription", key) { code, sub in
+            guard code == 200, let sub = sub, let total = num(sub["hard_limit_usd"]) else { cb(nil); return }
+            let end = ymd(Date().addingTimeInterval(86400))
+            get("\(base)/v1/dashboard/billing/usage?start_date=2024-01-01&end_date=\(end)", key) { _, use in
+                var s = RelaySnapshot(); s.total = total
+                if let use = use, let cents = num(use["total_usage"]) { s.used = cents / 100.0 }
+                cb(s)
             }
+        }
+    }
+    // DeepSeek：{origin}/user/balance
+    private static func probeDeepSeek(_ origin: String, _ key: String, _ cb: @escaping (RelaySnapshot?) -> Void) {
+        get("\(origin)/user/balance", key) { code, obj in
+            guard code == 200, let infos = obj?["balance_infos"] as? [[String: Any]], let info = infos.first else { cb(nil); return }
+            var s = RelaySnapshot()
+            s.remainingDirect = num(info["total_balance"])
+            s.currency = symbol(info["currency"] as? String)
+            cb(s)
+        }
+    }
+    // OpenRouter：{origin}/api/v1/credits → data.total_credits - data.total_usage (USD)
+    private static func probeOpenRouter(_ origin: String, _ key: String, _ cb: @escaping (RelaySnapshot?) -> Void) {
+        get("\(origin)/api/v1/credits", key) { code, obj in
+            guard code == 200, let d = obj?["data"] as? [String: Any],
+                  let total = num(d["total_credits"]) else { cb(nil); return }
+            var s = RelaySnapshot()
+            s.total = total
+            s.used = num(d["total_usage"]) ?? 0
+            cb(s)
+        }
+    }
+    // 硅基流动：/v1/user/info → data.totalBalance / balance (CNY)
+    private static func probeSiliconFlow(_ base: String, _ key: String, _ cb: @escaping (RelaySnapshot?) -> Void) {
+        get("\(base)/v1/user/info", key) { code, obj in
+            guard code == 200, let d = obj?["data"] as? [String: Any],
+                  let bal = num(d["totalBalance"]) ?? num(d["balance"]) else { cb(nil); return }
+            var s = RelaySnapshot()
+            s.remainingDirect = bal
+            s.currency = "¥"
+            cb(s)
+        }
+    }
+
+    /// 兼容数字或字符串数字
+    private static func num(_ v: Any?) -> Double? {
+        if let d = v as? Double { return d }
+        if let n = v as? NSNumber { return n.doubleValue }
+        if let s = v as? String { return Double(s) }
+        return nil
+    }
+    private static func symbol(_ currency: String?) -> String {
+        switch currency?.uppercased() {
+        case "CNY", "RMB": return "¥"
+        case "USD": return "$"
+        case "EUR": return "€"
+        default: return currency.map { "\($0) " } ?? "$"
         }
     }
 
@@ -71,6 +138,15 @@ enum RelayAPI {
         while s.hasSuffix("/") { s.removeLast() }
         if s.hasSuffix("/v1") { s.removeLast(3) }
         return s
+    }
+    /// 取协议+域名(+端口)，忽略后面的 /anthropic、/v1 等路径
+    private static func origin(_ s: String) -> String {
+        if let u = URL(string: s.trimmingCharacters(in: .whitespaces)),
+           let scheme = u.scheme, let host = u.host {
+            if let port = u.port { return "\(scheme)://\(host):\(port)" }
+            return "\(scheme)://\(host)"
+        }
+        return normalize(s)
     }
     private static func ymd(_ d: Date) -> String {
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; f.timeZone = TimeZone(identifier: "UTC")
@@ -87,23 +163,24 @@ enum RelayAPI {
         }
     }
 
-    private static func request(_ urlStr: String, key: String,
-                                completion: @escaping (Result<[String: Any], Error>) -> Void) {
-        guard let url = URL(string: urlStr) else { completion(.failure(RelayError.message("URL 无效"))); return }
+    /// GET 请求，回调 (HTTP状态码, 解析后的 JSON?)。非 200 也回调，由探测器决定。
+    private static func get(_ urlStr: String, _ key: String,
+                            completion: @escaping (Int, [String: Any]?) -> Void) {
+        guard let url = URL(string: urlStr) else { completion(-1, nil); return }
         var req = URLRequest(url: url)
         req.timeoutInterval = 15
         req.addValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         req.addValue("application/json", forHTTPHeaderField: "Accept")
         URLSession.shared.dataTask(with: req) { data, resp, err in
-            if let err = err { completion(.failure(err)); return }
-            if let code = (resp as? HTTPURLResponse)?.statusCode, code != 200 {
-                completion(.failure(RelayError.http(code))); return
+            if let err = err {
+                UsageAPI.log("Relay \(urlStr) 网络错误: \(err.localizedDescription)")
+                completion(-1, nil); return
             }
-            guard let data = data,
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                completion(.failure(RelayError.message("解析失败"))); return
-            }
-            completion(.success(obj))
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            let snippet = data.flatMap { String(data: $0.prefix(120), encoding: .utf8) } ?? ""
+            UsageAPI.log("Relay \(urlStr) -> \(code)  \(snippet)")
+            let obj = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? nil
+            completion(code, obj)
         }.resume()
     }
 }

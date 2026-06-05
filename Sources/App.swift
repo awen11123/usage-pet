@@ -304,13 +304,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func relayLines(_ acc: RelayAccount) -> [String] {
         if let e = relayErrors[acc.id] { return ["⚠️ \(e)"] }
         guard let s = relaySnaps[acc.id] else { return ["加载中…"] }
-        func money(_ v: Double) -> String { String(format: "%.2f", v) }
+        let c = s.currency
+        func money(_ v: Double) -> String { "\(c)\(String(format: "%.2f", v))" }
         var l: [String] = []
         if let u = s.usedPercent { l.append("用量 \(bar(u)) \(Int(u))%") }
         if let r = s.remaining, let t = s.total {
-            l.append("余 $\(money(r)) / $\(money(t))")
+            l.append("余 \(money(r)) / \(money(t))")
+        } else if let r = s.remaining {
+            l.append("余额 \(money(r))")          // 只有余额(如 DeepSeek)
         } else if let u = s.used {
-            l.append("已用 $\(money(u))")
+            l.append("已用 \(money(u))")
         }
         return l.isEmpty ? ["无数据"] : l
     }

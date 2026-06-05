@@ -43,11 +43,20 @@ cookie 读取，并让 WebKit 自动通过 Cloudflare 校验。
 
 > 默认选中 Claude。右键 → 数据源 单选切换到 Codex 或某个中转。
 
-**中转 API / Relay** — 给走第三方网关（one-api / new-api 等）的用户。右键 →
+**中转 API / Relay** — 给走第三方网关或按量计费 API 的用户。右键 →
 数据源 → 添加中转 API…，填名称、Base URL、API Key（添加后自动切到它）。
-应用调用 OpenAI 兼容的计费接口 `/v1/dashboard/billing/subscription` 与
-`/v1/dashboard/billing/usage` 计算「余额 = 总额度 − 已用」。可添加多个，
-配置存于 `~/.claude/claude-pet-relays.json`(权限 600)。
+应用会**自动探测**多种主流余额接口，第一个命中的即采用：
+
+| 类型 | 接口 | 显示 |
+|------|------|------|
+| one-api / new-api 等 | `/v1/dashboard/billing/subscription` + `/usage` | 余额 = 总额度 − 已用 + 用量% |
+| DeepSeek | `/user/balance` | 余额（¥）|
+| OpenRouter | `/api/v1/credits` | 余额 = total − used + 用量% |
+| 硅基流动 SiliconFlow | `/v1/user/info` | 余额（¥）|
+
+> Base URL 填带不带 `/v1`、`/anthropic` 都行，应用会自动处理路径。
+> 可添加多个，配置存于 `~/.claude/claude-pet-relays.json`(权限 600)。
+> 其它格式的中转欢迎在 `Sources/Relay.swift` 的探测链里加一条 PR。
 
 ### 构建运行
 ```bash
