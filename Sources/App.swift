@@ -27,9 +27,11 @@ final class PetView: NSView {
     private var animTimer: Timer?
     private var mood: Mood = .happy
     private var skin: Skin
-    private let scale: CGFloat
+    private var scale: CGFloat
+    private var offline = false
     var onRightClick: ((NSEvent) -> Void)?
     var onHoverChange: ((Bool) -> Void)?
+    var onMoved: (() -> Void)?
 
     init(skin: Skin, scale: CGFloat) {
         self.skin = skin
@@ -55,6 +57,19 @@ final class PetView: NSView {
         reloadFrames()
     }
 
+    func setScale(_ s: CGFloat) {
+        guard s != scale else { return }
+        scale = s
+        setFrameSize(NSSize(width: 16 * s, height: 16 * s))
+        reloadFrames()
+    }
+
+    func setOffline(_ off: Bool) {
+        guard off != offline else { return }
+        offline = off
+        needsDisplay = true
+    }
+
     private func reloadFrames() {
         frames = skin.frames(for: mood, scale: scale)
         frameIndex = 0
@@ -76,11 +91,27 @@ final class PetView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         guard !frames.isEmpty else { return }
-        frames[frameIndex].draw(in: bounds)
+        // 掉线时半透明 + 右上角红色「!」
+        frames[frameIndex].draw(in: bounds, from: .zero, operation: .sourceOver,
+                                fraction: offline ? 0.45 : 1.0)
+        if offline {
+            let s = scale * 5
+            let badge = NSRect(x: bounds.maxX - s - scale, y: bounds.maxY - s - scale, width: s, height: s)
+            NSColor(srgbRed: 0.90, green: 0.25, blue: 0.20, alpha: 1).setFill()
+            NSBezierPath(ovalIn: badge).fill()
+            let txt = "!" as NSString
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.boldSystemFont(ofSize: s * 0.72),
+                .foregroundColor: NSColor.white,
+            ]
+            let sz = txt.size(withAttributes: attrs)
+            txt.draw(at: NSPoint(x: badge.midX - sz.width/2, y: badge.midY - sz.height/2), withAttributes: attrs)
+        }
     }
 
     override func mouseDown(with event: NSEvent) {
-        window?.performDrag(with: event)   // 拖动整个面板
+        window?.performDrag(with: event)   // performDrag 同步阻塞至拖动结束
+        onMoved?()                          // 拖动结束后保存位置
     }
     override func rightMouseDown(with event: NSEvent) { onRightClick?(event) }
     override func mouseEntered(with event: NSEvent) { onHoverChange?(true) }
@@ -135,7 +166,10 @@ final class BubblePanel: NSPanel {
 
 // MARK: - App
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    let scale: CGFloat = 6
+    var petScale: CGFloat {
+        get { CGFloat(UserDefaults.standard.object(forKey: "petScale") as? Int ?? 6) }
+        set { UserDefaults.standard.set(Int(newValue), forKey: "petScale") }
+    }
     var panel: PetPanel!
     var petView: PetView!
     var bubble: BubblePanel!
@@ -148,6 +182,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var relayAccounts: [RelayAccount] = RelayStore.load()
     var relaySnaps: [String: RelaySnapshot] = [:]
     var relayErrors: [String: String] = [:]
+    var relayProbeHint: [String: Int] = [:]   // 缓存上次成功的探测下标
+    var claudeModel: String?                  // 缓存当前模型，避免每次悬停扫盘
+    var codexModel: String?
     var currentSkin: Skin = Skins.byId(UserDefaults.standard.string(forKey: "skinId") ?? "dog")
 
     // 当前唯一数据源："claude" / "codex" / 中转账户 id（默认 Claude）
@@ -162,18 +199,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ note: Notification) {
         NSApp.setActivationPolicy(.accessory)   // 不在 Dock 显示
 
-        let side = 16 * scale
+        let side = 16 * petScale
         panel = PetPanel(size: NSSize(width: side, height: side))
-        petView = PetView(skin: currentSkin, scale: scale)
+        petView = PetView(skin: currentSkin, scale: petScale)
         panel.contentView = petView
 
         bubble = BubblePanel()
 
         petView.onRightClick = { [weak self] e in self?.showMenu(e) }
         petView.onHoverChange = { [weak self] hovering in self?.toggleBubble(hovering) }
+        petView.onMoved = { [weak self] in self?.savePosition() }
 
-        // 放到屏幕右下角
-        if let vf = NSScreen.main?.visibleFrame {
+        // 恢复上次位置，没有则放屏幕右下角
+        if let x = UserDefaults.standard.object(forKey: "petX") as? Double,
+           let y = UserDefaults.standard.object(forKey: "petY") as? Double {
+            panel.setFrameOrigin(NSPoint(x: x, y: y))
+        } else if let vf = NSScreen.main?.visibleFrame {
             panel.setFrameOrigin(NSPoint(x: vf.maxX - side - 40, y: vf.minY + 60))
         }
         panel.orderFront(nil)
@@ -183,6 +224,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func ensureWeb() { if web == nil { web = ClaudeWeb() } }
+
+    func savePosition() {
+        let o = panel.frame.origin
+        UserDefaults.standard.set(Double(o.x), forKey: "petX")
+        UserDefaults.standard.set(Double(o.y), forKey: "petY")
+    }
+
+    /// 切换宠物大小(保持左下角位置)
+    func applyScale(_ s: Int) {
+        petScale = CGFloat(s)
+        petView.setScale(petScale)
+        let origin = panel.frame.origin
+        panel.setContentSize(NSSize(width: 16 * petScale, height: 16 * petScale))
+        panel.setFrameOrigin(origin)
+        savePosition()
+    }
 
     // MARK: 刷新
     func startRefreshing() {
@@ -219,26 +276,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         } else if let acc = activeRelay {
-            RelayAPI.fetch(acc) { [weak self] result in
+            RelayAPI.fetch(acc, preferred: relayProbeHint[acc.id]) { [weak self] result, idx in
                 DispatchQueue.main.async {
                     guard let self = self else { return }
                     switch result {
-                    case .success(let snap): self.relayErrors[acc.id] = nil; self.relaySnaps[acc.id] = snap
-                    case .failure(let err):  self.relayErrors[acc.id] = err.localizedDescription
+                    case .success(let snap):
+                        self.relayErrors[acc.id] = nil; self.relaySnaps[acc.id] = snap
+                        if let idx = idx { self.relayProbeHint[acc.id] = idx }   // 记住命中的探测
+                    case .failure(let err):
+                        self.relayErrors[acc.id] = err.localizedDescription
                     }
                     self.updateMood(); self.refreshBubbleIfVisible()
                 }
             }
         }
+        refreshModel()
     }
 
-    /// 心情取当前数据源的用量
+    /// 后台读取当前模型并缓存(避免在主线程/每次悬停扫盘)
+    func refreshModel() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self else { return }
+            let cm = self.isClaude ? ModelInfo.claude() : nil
+            let xm = self.isCodex ? ModelInfo.codex() : nil
+            DispatchQueue.main.async {
+                self.claudeModel = cm; self.codexModel = xm
+                self.refreshBubbleIfVisible()
+            }
+        }
+    }
+
+    /// 心情取当前数据源的用量；同时更新「掉线」状态
     func updateMood() {
         var v: Double = 0
-        if isClaude { v = snapshot?.maxUtilization ?? 0 }
-        else if isCodex { v = codexSnap?.maxUtilization ?? 0 }
-        else if let acc = activeRelay { v = relaySnaps[acc.id]?.usedPercent ?? 0 }
+        var offline = false
+        if isClaude { v = snapshot?.maxUtilization ?? 0; offline = (lastError != nil) }
+        else if isCodex { v = codexSnap?.maxUtilization ?? 0; offline = (codexError != nil) }
+        else if let acc = activeRelay { v = relaySnaps[acc.id]?.usedPercent ?? 0; offline = (relayErrors[acc.id] != nil) }
         petView.setMood(Mood.from(utilization: v))
+        petView.setOffline(offline)
     }
 
     // MARK: 气泡
@@ -269,11 +345,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let title: String, lines: [String]
         if isClaude {
             var t = "Claude"
-            if let m = ModelInfo.claude() { t += " · \(ModelInfo.pretty(m))" }
+            if let m = claudeModel { t += " · \(ModelInfo.pretty(m))" }
             title = t; lines = claudeLines()
         } else if isCodex {
             var t = "Codex"
-            if let m = ModelInfo.codex() { t += " · \(ModelInfo.pretty(m))" }
+            if let m = codexModel { t += " · \(ModelInfo.pretty(m))" }
             title = t; lines = codexLines()
         } else if let acc = activeRelay {
             title = acc.name; lines = relayLines(acc)
@@ -351,6 +427,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         skinItem.submenu = skinMenu
         menu.addItem(skinItem)
 
+        // 大小 子菜单
+        let sizeItem = NSMenuItem(title: "大小", action: nil, keyEquivalent: "")
+        let sizeMenu = NSMenu()
+        for (label, val) in [("大", 8), ("中", 6), ("小", 4)] {
+            let it = NSMenuItem(title: label, action: #selector(menuPickSize(_:)), keyEquivalent: "")
+            it.target = self; it.tag = val
+            it.state = (Int(petScale) == val) ? .on : .off
+            sizeMenu.addItem(it)
+        }
+        sizeItem.submenu = sizeMenu
+        menu.addItem(sizeItem)
+
         // 数据源 子菜单(单选)
         let srcItem = NSMenuItem(title: "数据源", action: nil, keyEquivalent: "")
         let srcMenu = NSMenu()
@@ -399,6 +487,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if id == "claude" { ensureWeb() }
         updateMood(); refreshBubbleIfVisible(); refresh()
     }
+    @objc func menuPickSize(_ sender: NSMenuItem) { applyScale(sender.tag) }
     @objc func menuPickClaude() { switchSource(to: "claude") }
     @objc func menuPickCodex()  { switchSource(to: "codex") }
     @objc func menuPickRelay(_ sender: NSMenuItem) {
@@ -434,7 +523,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func menuRemoveRelay(_ sender: NSMenuItem) {
         guard sender.tag < relayAccounts.count else { return }
         let acc = relayAccounts.remove(at: sender.tag)
-        relaySnaps[acc.id] = nil; relayErrors[acc.id] = nil
+        relaySnaps[acc.id] = nil; relayErrors[acc.id] = nil; relayProbeHint[acc.id] = nil
+        RelayStore.remove(acc)        // 删除钥匙串里的 key
         RelayStore.save(relayAccounts)
         if activeSource == acc.id { switchSource(to: "claude") }   // 删的是当前源则回退
         else { refreshBubbleIfVisible() }

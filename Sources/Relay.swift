@@ -24,51 +24,79 @@ struct RelaySnapshot {
     }
 }
 
-// MARK: - 配置存储(~/.claude/claude-pet-relays.json)
+// MARK: - 配置存储
+// 名称/URL 存 JSON(~/.claude/claude-pet-relays.json)，API Key 存钥匙串。
 enum RelayStore {
     static let path: String = {
         FileManager.default.homeDirectoryForCurrentUser.path + "/.claude/claude-pet-relays.json"
     }()
+
     static func load() -> [RelayAccount] {
         guard let data = FileManager.default.contents(atPath: path),
-              let arr = try? JSONDecoder().decode([RelayAccount].self, from: data) else { return [] }
+              var arr = try? JSONDecoder().decode([RelayAccount].self, from: data) else { return [] }
+        var migrated = false
+        for i in arr.indices {
+            if arr[i].apiKey.isEmpty {
+                arr[i].apiKey = Keychain.get(arr[i].id) ?? ""      // 正常：从钥匙串取
+            } else {
+                Keychain.set(arr[i].apiKey, account: arr[i].id)    // 旧明文：迁移进钥匙串
+                migrated = true
+            }
+        }
+        if migrated { save(arr) }   // 重写 JSON(去掉明文 key)
         return arr
     }
+
     static func save(_ accounts: [RelayAccount]) {
         let dir = (path as NSString).deletingLastPathComponent
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        if let data = try? JSONEncoder().encode(accounts) {
+        for a in accounts { Keychain.set(a.apiKey, account: a.id) }
+        // JSON 里抹掉 key
+        let sanitized = accounts.map { a -> RelayAccount in var c = a; c.apiKey = ""; return c }
+        if let data = try? JSONEncoder().encode(sanitized) {
             try? data.write(to: URL(fileURLWithPath: path))
             try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
         }
+    }
+
+    static func remove(_ account: RelayAccount) {
+        Keychain.delete(account.id)
     }
 }
 
 // MARK: - 查询(OpenAI 兼容计费接口)
 enum RelayAPI {
-    static func fetch(_ acc: RelayAccount, completion: @escaping (Result<RelaySnapshot, Error>) -> Void) {
+    /// preferred: 上次成功的探测下标(优先尝试)。回调附带本次命中的下标，供缓存。
+    static func fetch(_ acc: RelayAccount, preferred: Int? = nil,
+                      completion: @escaping (Result<RelaySnapshot, Error>, Int?) -> Void) {
         let base = normalize(acc.baseURL)
         let org = origin(acc.baseURL)
         let key = acc.apiKey
-        // 探测链：依次尝试各主流中转的余额格式，第一个成功的胜出
         let probes: [(@escaping (RelaySnapshot?) -> Void) -> Void] = [
-            { cb in probeOneAPI(base, key, cb) },        // one-api / new-api
-            { cb in probeDeepSeek(org, key, cb) },       // DeepSeek
-            { cb in probeOpenRouter(org, key, cb) },     // OpenRouter
-            { cb in probeSiliconFlow(base, key, cb) },   // 硅基流动
+            { cb in probeOneAPI(base, key, cb) },        // 0 one-api / new-api
+            { cb in probeDeepSeek(org, key, cb) },       // 1 DeepSeek
+            { cb in probeOpenRouter(org, key, cb) },     // 2 OpenRouter
+            { cb in probeSiliconFlow(base, key, cb) },   // 3 硅基流动
         ]
-        runProbes(probes, 0) { snap in
-            if let s = snap { completion(.success(s)) }
-            else { completion(.failure(RelayError.message("无法识别该中转的余额接口"))) }
+        // 探测顺序：优先项排最前，其余按原序补上
+        var order = Array(probes.indices)
+        if let p = preferred, order.contains(p) {
+            order.removeAll { $0 == p }; order.insert(p, at: 0)
+        }
+        runProbes(probes, order, 0) { snap, idx in
+            if let s = snap { completion(.success(s), idx) }
+            else { completion(.failure(RelayError.message("无法识别该中转的余额接口")), nil) }
         }
     }
 
     private static func runProbes(_ probes: [(@escaping (RelaySnapshot?) -> Void) -> Void],
-                                  _ i: Int, _ done: @escaping (RelaySnapshot?) -> Void) {
-        if i >= probes.count { done(nil); return }
-        let probe = probes[i]
+                                  _ order: [Int], _ k: Int,
+                                  _ done: @escaping (RelaySnapshot?, Int?) -> Void) {
+        if k >= order.count { done(nil, nil); return }
+        let idx = order[k]
+        let probe = probes[idx]
         probe { snap in
-            if let s = snap { done(s) } else { runProbes(probes, i + 1, done) }
+            if let s = snap { done(s, idx) } else { runProbes(probes, order, k + 1, done) }
         }
     }
 

@@ -28,7 +28,8 @@ The more quota you burn, the more anxious the pet gets.
 - **6 种形象**可换：🐶 奶白小狗 / 🐱 橘猫 / 🐈‍⬛ 黑猫 / 🐱 奶白猫 / 🐰 小兔 / 👾 小怪兽
 - **鼠标悬停**：弹气泡显示各项用量百分比 + 重置倒计时
 - **显示当前模型**：气泡标出正在用的模型（如 Opus 4.8），从本地会话日志读取
-- **拖动**移动 · **右键**菜单 · **开机自启**
+- **掉线提示**：登录过期/网络错误时宠物变半透明并显示红色「!」
+- **拖动**移动（位置记忆）· **大小**可调（大/中/小）· **右键**菜单 · **开机自启**
 - 默认每 5 分钟自动刷新
 
 ### 数据源怎么配
@@ -71,7 +72,8 @@ open ClaudePet.app
 ### 数据与隐私
 所有数据只在本地使用，不上传任何服务器。
 - Claude 登录态：WebKit 持久 cookie（`~/Library/WebKit/...`）
-- 形象/开关偏好：`UserDefaults`
+- 中转 API Key：macOS **钥匙串**（JSON 配置里只存名称和 URL）
+- 形象/大小/位置/数据源偏好：`UserDefaults`
 - 调试日志：把 `Sources/Usage.swift` 的 `logging` 改成 `true`，写到 `~/.claude/claude-pet.log`
 
 ---
@@ -135,8 +137,9 @@ and `bubbleText()`. PRs for other AIs welcome.
 | `Sources/Usage.swift` | Claude 数据模型 |
 | `Sources/Web.swift`   | Claude WebKit 数据源(登录+取数) |
 | `Sources/Codex.swift` | Codex `app-server` RPC 数据源 |
-| `Sources/Relay.swift` | 中转 API 余额数据源(OpenAI 兼容计费接口) |
+| `Sources/Relay.swift` | 中转 API 余额数据源(多格式自动探测) |
 | `Sources/ModelInfo.swift` | 从本地会话日志读当前模型 |
+| `Sources/Keychain.swift` | 中转 API Key 的钥匙串存储 |
 | `Sources/App.swift`   | 悬浮窗 / 气泡 / 交互 / 菜单 |
 | `Sources/main.swift`  | 入口 |
 

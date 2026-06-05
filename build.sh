@@ -12,6 +12,7 @@ swiftc -O \
     Sources/Pixel.swift \
     Sources/Pet.swift \
     Sources/ModelInfo.swift \
+    Sources/Keychain.swift \
     Sources/Usage.swift \
     Sources/Codex.swift \
     Sources/Relay.swift \
