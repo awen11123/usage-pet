@@ -32,6 +32,7 @@ final class PetView: NSView {
     var onRightClick: ((NSEvent) -> Void)?
     var onHoverChange: ((Bool) -> Void)?
     var onMoved: (() -> Void)?
+    var onDragStart: (() -> Void)?
 
     init(skin: Skin, scale: CGFloat) {
         self.skin = skin
@@ -71,10 +72,27 @@ final class PetView: NSView {
     }
 
     private func reloadFrames() {
-        frames = skin.frames(for: mood, scale: scale)
+        frames = skin.frames(for: mood, scale: scale).map(PetView.addShading)
         frameIndex = 0
         restartAnimation()
         needsDisplay = true
+    }
+
+    /// 在像素已有的区域内叠加「顶亮底暗」的渐变，得到立体光照。
+    /// 用 .sourceAtop 仅作用在 sprite 的非透明像素上，silhouette 保持锐利。
+    private static func addShading(_ src: NSImage) -> NSImage {
+        let out = NSImage(size: src.size)
+        out.lockFocus()
+        src.draw(at: .zero, from: .zero, operation: .sourceOver, fraction: 1.0)
+        let grad = NSGradient(colorsAndLocations:
+            (NSColor.black.withAlphaComponent(0.30), 0.0),   // 底部加暗
+            (NSColor.clear,                          0.55),  // 中间不变
+            (NSColor.white.withAlphaComponent(0.22), 1.0)    // 顶部加亮
+        )!
+        NSGraphicsContext.current!.compositingOperation = .sourceAtop
+        grad.draw(in: NSRect(origin: .zero, size: src.size), angle: 90)
+        out.unlockFocus()
+        return out
     }
 
     private func restartAnimation() {
@@ -91,9 +109,18 @@ final class PetView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         guard !frames.isEmpty else { return }
-        // 掉线时半透明 + 右上角红色「!」
+        let ctx = NSGraphicsContext.current!.cgContext
+
+        // 立体感：基于像素轮廓的柔和投影(让宠物「站」在桌面上而不是贴上去)
+        ctx.saveGState()
+        ctx.setShadow(
+            offset: CGSize(width: 0, height: -scale * 0.6),
+            blur: scale * 1.4,
+            color: NSColor.black.withAlphaComponent(offline ? 0.18 : 0.38).cgColor
+        )
         frames[frameIndex].draw(in: bounds, from: .zero, operation: .sourceOver,
                                 fraction: offline ? 0.45 : 1.0)
+        ctx.restoreGState()
         if offline {
             let s = scale * 5
             let badge = NSRect(x: bounds.maxX - s - scale, y: bounds.maxY - s - scale, width: s, height: s)
@@ -110,8 +137,9 @@ final class PetView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        onDragStart?()                      // 暂停 bob，避免和拖动冲突
         window?.performDrag(with: event)   // performDrag 同步阻塞至拖动结束
-        onMoved?()                          // 拖动结束后保存位置
+        onMoved?()                          // 拖动结束后更新基点并保存
     }
     override func rightMouseDown(with event: NSEvent) { onRightClick?(event) }
     override func mouseEntered(with event: NSEvent) { onHoverChange?(true) }
@@ -184,6 +212,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var relayErrors: [String: String] = [:]
     var relayProbeHint: [String: Int] = [:]   // 缓存上次成功的探测下标
     var notifyLevel: [String: Int] = [:]      // 各源上次通知到的阈值等级(边沿触发)
+    var petBase: NSPoint = .zero              // 逻辑位置(拖动/缩放后更新；bob 不动它)
+    var bobTimer: Timer?
+    var bobStart = Date()
+    var bobPaused = false
+    var currentMood: Mood = .happy
     var claudeModel: String?                  // 缓存当前模型，避免每次悬停扫盘
     var codexModel: String?
     var currentSkin: Skin = Skins.byId(UserDefaults.standard.string(forKey: "skinId") ?? "dog")
@@ -209,16 +242,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         petView.onRightClick = { [weak self] e in self?.showMenu(e) }
         petView.onHoverChange = { [weak self] hovering in self?.toggleBubble(hovering) }
-        petView.onMoved = { [weak self] in self?.savePosition() }
+        petView.onDragStart = { [weak self] in self?.bobPaused = true }
+        petView.onMoved = { [weak self] in
+            guard let self = self else { return }
+            self.petBase = self.panel.frame.origin   // 用户拖到哪儿，基点就在哪儿
+            self.bobPaused = false
+            self.savePosition()
+        }
 
         // 恢复上次位置，没有则放屏幕右下角
         if let x = UserDefaults.standard.object(forKey: "petX") as? Double,
            let y = UserDefaults.standard.object(forKey: "petY") as? Double {
-            panel.setFrameOrigin(NSPoint(x: x, y: y))
+            petBase = NSPoint(x: x, y: y)
         } else if let vf = NSScreen.main?.visibleFrame {
-            panel.setFrameOrigin(NSPoint(x: vf.maxX - side - 40, y: vf.minY + 60))
+            petBase = NSPoint(x: vf.maxX - side - 40, y: vf.minY + 60)
         }
+        panel.setFrameOrigin(petBase)
         panel.orderFront(nil)
+        startBob()
 
         if isClaude { ensureWeb() }
         startRefreshing()
@@ -227,19 +268,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func ensureWeb() { if web == nil { web = ClaudeWeb() } }
 
     func savePosition() {
-        let o = panel.frame.origin
-        UserDefaults.standard.set(Double(o.x), forKey: "petX")
-        UserDefaults.standard.set(Double(o.y), forKey: "petY")
+        UserDefaults.standard.set(Double(petBase.x), forKey: "petX")
+        UserDefaults.standard.set(Double(petBase.y), forKey: "petY")
     }
 
-    /// 切换宠物大小(保持左下角位置)
+    /// 切换宠物大小(保持基点位置)
     func applyScale(_ s: Int) {
         petScale = CGFloat(s)
         petView.setScale(petScale)
-        let origin = panel.frame.origin
         panel.setContentSize(NSSize(width: 16 * petScale, height: 16 * petScale))
-        panel.setFrameOrigin(origin)
+        panel.setFrameOrigin(petBase)
         savePosition()
+    }
+
+    // MARK: 闲置浮动(让宠物「呼吸」)
+    func startBob() {
+        bobTimer?.invalidate()
+        bobStart = Date()
+        bobTimer = Timer.scheduledTimer(withTimeInterval: 1.0/30.0, repeats: true) { [weak self] _ in
+            self?.tickBob()
+        }
+    }
+    func tickBob() {
+        guard !bobPaused else { return }
+        let t = Date().timeIntervalSince(bobStart)
+        let unit = Double(petScale)
+        // (振幅, 周期秒, 水平抖动幅度)：按心情区分节奏
+        let (amp, period, shake): (Double, Double, Double)
+        switch currentMood {
+        case .happy:   (amp, period, shake) = (unit * 0.6, 1.4, 0)         // 轻快
+        case .neutral: (amp, period, shake) = (unit * 0.4, 2.2, 0)         // 缓和呼吸
+        case .worried: (amp, period, shake) = (unit * 0.5, 1.3, 0)         // 略快
+        case .panic:   (amp, period, shake) = (unit * 0.7, 0.35, unit*0.3) // 高频+左右抖
+        }
+        let dy = sin(t * 2 * .pi / period) * amp
+        let dx = shake > 0 ? Double.random(in: -shake...shake) : 0
+        panel.setFrameOrigin(NSPoint(x: petBase.x + dx, y: petBase.y + dy))
     }
 
     // MARK: 刷新
@@ -315,7 +379,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if isClaude { v = snapshot?.maxUtilization ?? 0; offline = (lastError != nil) }
         else if isCodex { v = codexSnap?.maxUtilization ?? 0; offline = (codexError != nil); label = "Codex" }
         else if let acc = activeRelay { v = relaySnaps[acc.id]?.usedPercent ?? 0; offline = (relayErrors[acc.id] != nil); label = acc.name }
-        petView.setMood(Mood.from(utilization: v))
+        currentMood = Mood.from(utilization: v)
+        petView.setMood(currentMood)
         petView.setOffline(offline)
         if !offline { checkNotify(util: v, label: label) }
     }
