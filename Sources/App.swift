@@ -72,27 +72,10 @@ final class PetView: NSView {
     }
 
     private func reloadFrames() {
-        frames = skin.frames(for: mood, scale: scale).map(PetView.addShading)
+        frames = skin.frames(for: mood, scale: scale)
         frameIndex = 0
         restartAnimation()
         needsDisplay = true
-    }
-
-    /// 在像素已有的区域内叠加「顶亮底暗」的渐变，得到立体光照。
-    /// 用 .sourceAtop 仅作用在 sprite 的非透明像素上，silhouette 保持锐利。
-    private static func addShading(_ src: NSImage) -> NSImage {
-        let out = NSImage(size: src.size)
-        out.lockFocus()
-        src.draw(at: .zero, from: .zero, operation: .sourceOver, fraction: 1.0)
-        let grad = NSGradient(colorsAndLocations:
-            (NSColor.black.withAlphaComponent(0.30), 0.0),   // 底部加暗
-            (NSColor.clear,                          0.55),  // 中间不变
-            (NSColor.white.withAlphaComponent(0.22), 1.0)    // 顶部加亮
-        )!
-        NSGraphicsContext.current!.compositingOperation = .sourceAtop
-        grad.draw(in: NSRect(origin: .zero, size: src.size), angle: 90)
-        out.unlockFocus()
-        return out
     }
 
     private func restartAnimation() {
@@ -109,18 +92,9 @@ final class PetView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         guard !frames.isEmpty else { return }
-        let ctx = NSGraphicsContext.current!.cgContext
-
-        // 立体感：基于像素轮廓的柔和投影(让宠物「站」在桌面上而不是贴上去)
-        ctx.saveGState()
-        ctx.setShadow(
-            offset: CGSize(width: 0, height: -scale * 0.6),
-            blur: scale * 1.4,
-            color: NSColor.black.withAlphaComponent(offline ? 0.18 : 0.38).cgColor
-        )
+        // 卡通图自带投影与立体光照，直接绘制即可
         frames[frameIndex].draw(in: bounds, from: .zero, operation: .sourceOver,
                                 fraction: offline ? 0.45 : 1.0)
-        ctx.restoreGState()
         if offline {
             let s = scale * 5
             let badge = NSRect(x: bounds.maxX - s - scale, y: bounds.maxY - s - scale, width: s, height: s)

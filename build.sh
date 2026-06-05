@@ -12,8 +12,7 @@ swiftc -O \
     Sources/Logic.swift \
     Sources/I18n.swift \
     Sources/Notifier.swift \
-    Sources/Pixel.swift \
-    Sources/Pet.swift \
+    Sources/Cartoon.swift \
     Sources/ModelInfo.swift \
     Sources/Keychain.swift \
     Sources/Usage.swift \
