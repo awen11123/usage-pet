@@ -29,6 +29,9 @@ final class PetView: NSView {
     private var skin: Skin
     private var scale: CGFloat
     private var offline = false
+    private var activity: ActivityState = .idle
+    private var bubbleAnimTimer: Timer?
+    private var bubbleDotPhase: Int = 0   // 0/1/2 控制 "." ".." "..."
     var onRightClick: ((NSEvent) -> Void)?
     var onHoverChange: ((Bool) -> Void)?
     var onMoved: (() -> Void)?
@@ -71,6 +74,21 @@ final class PetView: NSView {
         needsDisplay = true
     }
 
+    func setActivity(_ s: ActivityState) {
+        guard s != activity else { return }
+        activity = s
+        // 思考状态下让 "..." 跳动
+        bubbleAnimTimer?.invalidate()
+        if s == .thinking {
+            bubbleAnimTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+                guard let self = self else { return }
+                self.bubbleDotPhase = (self.bubbleDotPhase + 1) % 3
+                self.needsDisplay = true
+            }
+        }
+        needsDisplay = true
+    }
+
     private func reloadFrames() {
         frames = skin.frames(for: mood, scale: scale)
         frameIndex = 0
@@ -95,6 +113,8 @@ final class PetView: NSView {
         // 卡通图自带投影与立体光照，直接绘制即可
         frames[frameIndex].draw(in: bounds, from: .zero, operation: .sourceOver,
                                 fraction: offline ? 0.45 : 1.0)
+        // 思考气泡(...) 显示在右上方
+        if !offline && activity == .thinking { drawThinkingBubble() }
         if offline {
             let s = scale * 5
             let badge = NSRect(x: bounds.maxX - s - scale, y: bounds.maxY - s - scale, width: s, height: s)
@@ -107,6 +127,30 @@ final class PetView: NSView {
             ]
             let sz = txt.size(withAttributes: attrs)
             txt.draw(at: NSPoint(x: badge.midX - sz.width/2, y: badge.midY - sz.height/2), withAttributes: attrs)
+        }
+    }
+
+    /// 思考气泡：右上方圆角矩形 + 三个点(随 bubbleDotPhase 变化)
+    private func drawThinkingBubble() {
+        let s = scale
+        let bw = s * 4.6, bh = s * 2.4
+        let bx = bounds.maxX - bw - s * 0.5
+        let by = bounds.maxY - bh - s * 0.5
+        let rect = NSRect(x: bx, y: by, width: bw, height: bh)
+        let path = NSBezierPath(roundedRect: rect, xRadius: bh*0.5, yRadius: bh*0.5)
+        NSColor.white.withAlphaComponent(0.95).setFill()
+        path.fill()
+        NSColor(srgbRed: 0.25, green: 0.22, blue: 0.22, alpha: 1).setStroke()
+        path.lineWidth = max(1.2, s * 0.18)
+        path.stroke()
+        // 三个点(根据 phase 高亮)
+        let dotR = s * 0.32
+        let cy = rect.midY
+        let xs = [rect.midX - dotR * 3, rect.midX, rect.midX + dotR * 3]
+        for (i, x) in xs.enumerated() {
+            let alpha: CGFloat = (i <= bubbleDotPhase) ? 1.0 : 0.35
+            NSColor(srgbRed: 0.25, green: 0.22, blue: 0.22, alpha: alpha).setFill()
+            NSBezierPath(ovalIn: NSRect(x: x - dotR, y: cy - dotR, width: dotR*2, height: dotR*2)).fill()
         }
     }
 
@@ -270,33 +314,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !bobPaused else { return }
         let t = Date().timeIntervalSince(bobStart)
         let unit = Double(petScale)
-        // 活动状态优先(working/justDone)，否则按心情节奏
-        let (amp, period, shake): (Double, Double, Double)
+        // (垂直振幅, 周期, 水平随机抖动, 水平平滑摆动)
+        let amp, period, hShake, hSway: Double
         switch activityState {
+        case .thinking:
+            // Claude 在思考：缓慢左右摇头 + 几乎不上下(像在沉思)
+            amp = unit * 0.18; period = 1.1; hShake = 0; hSway = unit * 0.40
         case .working:
-            // 工作中：快速点头 + 小幅左右晃(像在认真打字)
-            (amp, period, shake) = (unit * 0.45, 0.40, unit * 0.18)
+            // 你/工具在动作：快速点头 + 小幅左右抖
+            amp = unit * 0.50; period = 0.40; hShake = unit * 0.15; hSway = 0
         case .justDone:
-            // 刚结束：大幅跳动(开心庆祝)
-            (amp, period, shake) = (unit * 0.95, 0.60, 0)
+            // 刚结束：大幅度跳动(松口气)
+            amp = unit * 0.95; period = 0.60; hShake = 0; hSway = 0
         case .idle:
+            hShake = (currentMood == .panic) ? unit * 0.30 : 0
+            hSway = 0
             switch currentMood {
-            case .happy:   (amp, period, shake) = (unit * 0.6, 1.4, 0)
-            case .neutral: (amp, period, shake) = (unit * 0.4, 2.2, 0)
-            case .worried: (amp, period, shake) = (unit * 0.5, 1.3, 0)
-            case .panic:   (amp, period, shake) = (unit * 0.7, 0.35, unit*0.3)
+            case .happy:   amp = unit * 0.6; period = 1.4
+            case .neutral: amp = unit * 0.4; period = 2.2
+            case .worried: amp = unit * 0.5; period = 1.3
+            case .panic:   amp = unit * 0.7; period = 0.35
             }
         }
-        let dy = sin(t * 2 * .pi / period) * amp
-        let dx = shake > 0 ? Double.random(in: -shake...shake) : 0
-        panel.setFrameOrigin(NSPoint(x: petBase.x + dx, y: petBase.y + dy))
+        let phase = t * 2 * .pi / period
+        let dy = sin(phase) * amp
+        let dxJit = hShake > 0 ? Double.random(in: -hShake...hShake) : 0
+        let dxSway = hSway != 0 ? sin(phase + .pi/2) * hSway : 0
+        panel.setFrameOrigin(NSPoint(x: petBase.x + dxJit + dxSway, y: petBase.y + dy))
     }
 
-    /// 每 2 秒扫一次会话日志的修改时间，缓存活动状态(避免 30Hz 命中文件系统)
+    /// 每 2 秒扫一次会话日志，缓存活动状态(避免 30Hz 命中文件系统)
     func startActivityWatch() {
         activityTimer?.invalidate()
         activityTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            self?.activityState = Activity.currentState()
+            guard let self = self else { return }
+            let s = Activity.currentState()
+            if s != self.activityState {
+                self.activityState = s
+                self.petView.setActivity(s)   // 触发思考气泡重绘
+            }
         }
     }
 
