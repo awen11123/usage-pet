@@ -25,6 +25,7 @@ The more quota you burn, the more anxious the pet gets.
 - 桌面悬浮像素宠物，按用量切换表情：吐舌开心(0-50%) → 平静(50-80%) → 担心(80-95%) → 瞪眼冒汗(95%+)
 - **6 种形象**可换：🐶 奶白小狗 / 🐱 橘猫 / 🐈‍⬛ 黑猫 / 🐱 奶白猫 / 🐰 小兔 / 👾 小怪兽
 - **鼠标悬停**：弹气泡显示各项用量百分比 + 重置倒计时
+- **显示当前模型**：气泡标出正在用的模型（如 Opus 4.8），从本地会话日志读取
 - **拖动**移动 · **右键**菜单 · **开机自启**
 - 默认每 5 分钟自动刷新
 
@@ -64,6 +65,7 @@ open ClaudePet.app
 - Floating pixel pet; expression tracks usage: happy (0-50%) → calm (50-80%) → worried (80-95%) → panicking (95%+)
 - **6 skins**: dog / cat / black cat / cream cat / rabbit / monster
 - **Hover** for a bubble with per-window percentages and reset countdowns
+- Shows the **current model** in use (read from local session logs)
 - **Drag** to move · **right-click** menu · **launch at login**
 - Auto-refreshes every 5 minutes
 
@@ -98,7 +100,10 @@ persistent cookie store; preferences in `UserDefaults`.
 
 数据源是解耦的——参考 `Sources/Codex.swift`：实现一个返回 `(5h%, weekly%, resets)`
 的 fetcher，然后在 `AppDelegate.refresh()` 和 `bubbleText()` 里接上即可。
-欢迎 PR 你常用的 AI（Gemini、Kimi、opencode…）。
+
+> **为什么只内置 Claude 和 Codex？** 这两家有能直接拿到「订阅限额%」的来源
+> （claude.ai usage 接口 / `codex app-server` RPC）。Gemini、Qwen、Kimi 等没有这类
+> 接口，目前只能把 CLI 跑在伪终端里抓屏解析 TUI，较脆弱，故未内置。欢迎按需 PR。
 
 Providers are decoupled. To add one, mirror `Sources/Codex.swift` (return
 5h/weekly percentages + reset dates) and wire it into `AppDelegate.refresh()`

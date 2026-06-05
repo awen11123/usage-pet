@@ -11,6 +11,7 @@ swiftc -O \
     -framework WebKit \
     Sources/Pixel.swift \
     Sources/Pet.swift \
+    Sources/ModelInfo.swift \
     Sources/Usage.swift \
     Sources/Codex.swift \
     Sources/Web.swift \

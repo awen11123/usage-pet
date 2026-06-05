@@ -258,7 +258,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var lines: [String] = []
 
         if claudeEnabled {
-            if both { lines.append("◆ Claude") }
+            let title = both ? "◆ Claude" : "◆ Claude"
+            if let m = ModelInfo.claude() { lines.append("\(title)  · \(ModelInfo.pretty(m))") }
+            else { lines.append(title) }
             if let e = lastError {
                 lines.append("\(pad)⚠️ \(e)")
             } else if let s = snapshot {
@@ -273,7 +275,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         if codexEnabled {
-            if both { lines.append(""); lines.append("◆ Codex") }
+            if both || claudeEnabled { lines.append("") }
+            var title = "◆ Codex"
+            if let m = ModelInfo.codex() { title += "  · \(ModelInfo.pretty(m))" }
+            lines.append(title)
             if let s = codexSnap {
                 if let f = s.fiveHour { lines.append("\(pad)5小时 \(bar(f)) \(Int(f))%") }
                 if let w = s.weekly   { lines.append("\(pad)周    \(bar(w)) \(Int(w))%") }
