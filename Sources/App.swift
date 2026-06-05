@@ -183,6 +183,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var relaySnaps: [String: RelaySnapshot] = [:]
     var relayErrors: [String: String] = [:]
     var relayProbeHint: [String: Int] = [:]   // 缓存上次成功的探测下标
+    var notifyLevel: [String: Int] = [:]      // 各源上次通知到的阈值等级(边沿触发)
     var claudeModel: String?                  // 缓存当前模型，避免每次悬停扫盘
     var codexModel: String?
     var currentSkin: Skin = Skins.byId(UserDefaults.standard.string(forKey: "skinId") ?? "dog")
@@ -310,11 +311,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func updateMood() {
         var v: Double = 0
         var offline = false
+        var label = "Claude"
         if isClaude { v = snapshot?.maxUtilization ?? 0; offline = (lastError != nil) }
-        else if isCodex { v = codexSnap?.maxUtilization ?? 0; offline = (codexError != nil) }
-        else if let acc = activeRelay { v = relaySnaps[acc.id]?.usedPercent ?? 0; offline = (relayErrors[acc.id] != nil) }
+        else if isCodex { v = codexSnap?.maxUtilization ?? 0; offline = (codexError != nil); label = "Codex" }
+        else if let acc = activeRelay { v = relaySnaps[acc.id]?.usedPercent ?? 0; offline = (relayErrors[acc.id] != nil); label = acc.name }
         petView.setMood(Mood.from(utilization: v))
         petView.setOffline(offline)
+        if !offline { checkNotify(util: v, label: label) }
+    }
+
+    /// 边沿触发的阈值通知：每次跨入更高档位只提醒一次，掉回后自动重新武装
+    func checkNotify(util: Double, label: String) {
+        let key = activeSource
+        let lvl = thresholdLevel(util)
+        let last = notifyLevel[key] ?? 0
+        if lvl > last {
+            let fmt = lvl >= 2 ? L.t("notifCrit") : L.t("notifWarn")
+            Notifier.send(title: L.t("notifTitle"), body: String(format: fmt, label, Int(util)))
+        }
+        notifyLevel[key] = lvl
     }
 
     // MARK: 气泡
@@ -337,10 +352,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let y = pf.maxY + 6
         bubble.setFrameOrigin(NSPoint(x: x, y: y))
     }
-    private func bar(_ v: Double) -> String {
-        let n = max(0, min(10, Int((v / 100.0 * 10).rounded())))
-        return String(repeating: "█", count: n) + String(repeating: "░", count: 10 - n)
-    }
     func bubbleText() -> String {
         let title: String, lines: [String]
         if isClaude {
@@ -354,68 +365,87 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if let acc = activeRelay {
             title = acc.name; lines = relayLines(acc)
         } else {
-            return "未选择数据源\n右键 → 数据源"
+            return L.t("noSource")
         }
         return ([title] + lines).joined(separator: "\n")
     }
 
+    private func pct(_ v: Double) -> String { "\(Fmt.bar(v)) \(Int(v))%" }
+
+    private func forecastLine(util: Double, isoReset: String?, window: Double) -> String? {
+        guard let secs = secondsUntilReset(iso: isoReset), secs > 0 else { return nil }
+        switch Forecast.compute(util: util, secondsUntilReset: secs, windowSeconds: window) {
+        case .projected(let p): return String(format: L.t("pace"), p)
+        case .exhausted(let eta): return String(format: L.t("runout"), durationText(eta))
+        case .none: return nil
+        }
+    }
+
     private func claudeLines() -> [String] {
         if let e = lastError { return ["⚠️ \(e)"] }
-        guard let s = snapshot else { return ["加载中…"] }
-        var l = ["5小时 \(bar(s.fiveHour)) \(Int(s.fiveHour))%",
-                 "7天   \(bar(s.sevenDay)) \(Int(s.sevenDay))%"]
-        if let o = s.opus    { l.append("Opus  \(bar(o)) \(Int(o))%") }
-        if let so = s.sonnet { l.append("Sonn. \(bar(so)) \(Int(so))%") }
-        if let r = countdown(fromISO: s.fiveHourResets) { l.append("重置 \(r)") }
+        guard let s = snapshot else { return [L.t("loading")] }
+        var l = ["\(L.t("w5h")) \(pct(s.fiveHour))",
+                 "\(L.t("w7d")) \(pct(s.sevenDay))"]
+        if let o = s.opus    { l.append("Opus  \(pct(o))") }
+        if let so = s.sonnet { l.append("Sonn. \(pct(so))") }
+        if let f = forecastLine(util: s.sevenDay, isoReset: s.sevenDayResets, window: Window.sevenDay) {
+            l.append("↗ \(f)")
+        }
+        if let r = countdownISO(s.fiveHourResets) { l.append("\(L.t("reset")) \(r)") }
         return l
     }
     private func codexLines() -> [String] {
-        guard let s = codexSnap else { return [codexError ?? "加载中…"] }
+        guard let s = codexSnap else { return [codexError ?? L.t("loading")] }
         var l: [String] = []
-        if let f = s.fiveHour { l.append("5小时 \(bar(f)) \(Int(f))%") }
-        if let w = s.weekly   { l.append("周    \(bar(w)) \(Int(w))%") }
-        if let r = countdown(date: s.fiveHourResets) { l.append("重置 \(r)") }
-        return l.isEmpty ? ["无数据"] : l
+        if let f = s.fiveHour { l.append("\(L.t("w5h")) \(pct(f))") }
+        if let w = s.weekly   { l.append("\(L.t("week")) \(pct(w))") }
+        if let r = countdownDate(s.fiveHourResets) { l.append("\(L.t("reset")) \(r)") }
+        return l.isEmpty ? [L.t("noData")] : l
     }
     private func relayLines(_ acc: RelayAccount) -> [String] {
         if let e = relayErrors[acc.id] { return ["⚠️ \(e)"] }
-        guard let s = relaySnaps[acc.id] else { return ["加载中…"] }
+        guard let s = relaySnaps[acc.id] else { return [L.t("loading")] }
         let c = s.currency
-        func money(_ v: Double) -> String { "\(c)\(String(format: "%.2f", v))" }
         var l: [String] = []
-        if let u = s.usedPercent { l.append("用量 \(bar(u)) \(Int(u))%") }
+        if let u = s.usedPercent { l.append("\(L.t("usage")) \(pct(u))") }
         if let r = s.remaining, let t = s.total {
-            l.append("余 \(money(r)) / \(money(t))")
+            l.append("\(L.t("bal")) \(Fmt.money(r, c)) / \(Fmt.money(t, c))")
         } else if let r = s.remaining {
-            l.append("余额 \(money(r))")          // 只有余额(如 DeepSeek)
+            l.append("\(L.t("balance")) \(Fmt.money(r, c))")
         } else if let u = s.used {
-            l.append("已用 \(money(u))")
+            l.append("\(L.t("used")) \(Fmt.money(u, c))")
         }
-        return l.isEmpty ? ["无数据"] : l
+        return l.isEmpty ? [L.t("noData")] : l
     }
 
-    private func countdown(fromISO iso: String?) -> String? {
+    private func secondsUntilReset(iso: String?) -> Double? {
         guard let iso = iso else { return nil }
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let d = f.date(from: iso) ?? ISO8601DateFormatter().date(from: iso)
-        return countdown(date: d)
+        return d?.timeIntervalSinceNow
     }
-    private func countdown(date: Date?) -> String? {
+    private func durationText(_ secs: Double) -> String {
+        let (h, m) = Fmt.hm(secs)
+        return h > 0 ? String(format: L.t("hm"), h, m) : String(format: L.t("m"), m)
+    }
+    private func countdownISO(_ iso: String?) -> String? {
+        guard let secs = secondsUntilReset(iso: iso) else { return nil }
+        return secs <= 0 ? L.t("soon") : durationText(secs)
+    }
+    private func countdownDate(_ date: Date?) -> String? {
         guard let d = date else { return nil }
         let secs = d.timeIntervalSinceNow
-        if secs <= 0 { return "即将刷新" }
-        let h = Int(secs) / 3600, m = (Int(secs) % 3600) / 60
-        return h > 0 ? "\(h)小时\(m)分后" : "\(m)分后"
+        return secs <= 0 ? L.t("soon") : durationText(secs)
     }
 
     // MARK: 右键菜单
     func showMenu(_ event: NSEvent) {
         let menu = NSMenu()
-        menu.addItem(withTitle: "立即刷新", action: #selector(menuRefresh), keyEquivalent: "r").target = self
+        menu.addItem(withTitle: L.t("refresh"), action: #selector(menuRefresh), keyEquivalent: "r").target = self
 
         // 换形象 子菜单
-        let skinItem = NSMenuItem(title: "换形象", action: nil, keyEquivalent: "")
+        let skinItem = NSMenuItem(title: L.t("skin"), action: nil, keyEquivalent: "")
         let skinMenu = NSMenu()
         for (i, s) in Skins.all.enumerated() {
             let it = NSMenuItem(title: s.name, action: #selector(menuPickSkin(_:)), keyEquivalent: "")
@@ -428,10 +458,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(skinItem)
 
         // 大小 子菜单
-        let sizeItem = NSMenuItem(title: "大小", action: nil, keyEquivalent: "")
+        let sizeItem = NSMenuItem(title: L.t("size"), action: nil, keyEquivalent: "")
         let sizeMenu = NSMenu()
-        for (label, val) in [("大", 8), ("中", 6), ("小", 4)] {
-            let it = NSMenuItem(title: label, action: #selector(menuPickSize(_:)), keyEquivalent: "")
+        for (key, val) in [("size_l", 8), ("size_m", 6), ("size_s", 4)] {
+            let it = NSMenuItem(title: L.t(key), action: #selector(menuPickSize(_:)), keyEquivalent: "")
             it.target = self; it.tag = val
             it.state = (Int(petScale) == val) ? .on : .off
             sizeMenu.addItem(it)
@@ -440,7 +470,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(sizeItem)
 
         // 数据源 子菜单(单选)
-        let srcItem = NSMenuItem(title: "数据源", action: nil, keyEquivalent: "")
+        let srcItem = NSMenuItem(title: L.t("source"), action: nil, keyEquivalent: "")
         let srcMenu = NSMenu()
         let cl = NSMenuItem(title: "Claude", action: #selector(menuPickClaude), keyEquivalent: "")
         cl.target = self; cl.state = isClaude ? .on : .off
@@ -457,9 +487,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         srcMenu.addItem(.separator())
-        srcMenu.addItem(withTitle: "添加中转 API…", action: #selector(menuAddRelay), keyEquivalent: "").target = self
+        srcMenu.addItem(withTitle: L.t("addRelay"), action: #selector(menuAddRelay), keyEquivalent: "").target = self
         if !relayAccounts.isEmpty {
-            let delItem = NSMenuItem(title: "删除中转 API", action: nil, keyEquivalent: "")
+            let delItem = NSMenuItem(title: L.t("delRelay"), action: nil, keyEquivalent: "")
             let delMenu = NSMenu()
             for (i, acc) in relayAccounts.enumerated() {
                 let it = NSMenuItem(title: acc.name, action: #selector(menuRemoveRelay(_:)), keyEquivalent: "")
@@ -472,12 +502,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         srcItem.submenu = srcMenu
         menu.addItem(srcItem)
 
-        menu.addItem(withTitle: "登录 / 重新登录 Claude…", action: #selector(menuLogin), keyEquivalent: "l").target = self
-        let autoTitle = (SMAppService.mainApp.status == .enabled) ? "✓ 开机自启动" : "开机自启动"
+        menu.addItem(withTitle: L.t("login"), action: #selector(menuLogin), keyEquivalent: "l").target = self
+
+        // 语言 子菜单
+        let langItem = NSMenuItem(title: L.t("language"), action: nil, keyEquivalent: "")
+        let langMenu = NSMenu()
+        for (code, label) in [("auto", L.t("lang_auto")), ("zh", "中文"), ("en", "English")] {
+            let it = NSMenuItem(title: label, action: #selector(menuPickLang(_:)), keyEquivalent: "")
+            it.target = self; it.representedObject = code
+            it.state = (L.lang == code) ? .on : .off
+            langMenu.addItem(it)
+        }
+        langItem.submenu = langMenu
+        menu.addItem(langItem)
+
+        let autoTitle = (SMAppService.mainApp.status == .enabled) ? "✓ \(L.t("autostart"))" : L.t("autostart")
         menu.addItem(withTitle: autoTitle, action: #selector(menuToggleAutoStart), keyEquivalent: "").target = self
         menu.addItem(.separator())
-        menu.addItem(withTitle: "退出", action: #selector(menuQuit), keyEquivalent: "q").target = self
+        menu.addItem(withTitle: L.t("quit"), action: #selector(menuQuit), keyEquivalent: "q").target = self
         NSMenu.popUpContextMenu(menu, with: event, for: petView)
+    }
+    @objc func menuPickLang(_ sender: NSMenuItem) {
+        if let code = sender.representedObject as? String { L.lang = code; refreshBubbleIfVisible() }
     }
     @objc func menuRefresh() { refresh() }
     @objc func menuLogin() { ensureWeb(); web?.showLogin() }
@@ -496,17 +542,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     @objc func menuAddRelay() {
         let alert = NSAlert()
-        alert.messageText = "添加中转 API"
-        alert.informativeText = "填写中转服务的名称、Base URL 和 API Key。\n会查询 /v1/dashboard/billing 接口显示余额。"
-        alert.addButton(withTitle: "保存")
-        alert.addButton(withTitle: "取消")
+        alert.messageText = L.t("relayTitle")
+        alert.informativeText = L.t("relayInfo")
+        alert.addButton(withTitle: L.t("save"))
+        alert.addButton(withTitle: L.t("cancel"))
         let v = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 96))
         let name = NSTextField(frame: NSRect(x: 0, y: 66, width: 320, height: 24))
-        name.placeholderString = "名称（如：我的中转）"
+        name.placeholderString = L.t("relayName")
         let url = NSTextField(frame: NSRect(x: 0, y: 35, width: 320, height: 24))
-        url.placeholderString = "Base URL（如 https://api.example.com）"
+        url.placeholderString = L.t("relayURL")
         let key = NSTextField(frame: NSRect(x: 0, y: 4, width: 320, height: 24))
-        key.placeholderString = "API Key（sk-…）"
+        key.placeholderString = L.t("relayKey")
         v.addSubview(name); v.addSubview(url); v.addSubview(key)
         alert.accessoryView = v
         NSApp.activate(ignoringOtherApps: true)

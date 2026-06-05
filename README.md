@@ -28,8 +28,10 @@ The more quota you burn, the more anxious the pet gets.
 - **6 种形象**可换：🐶 奶白小狗 / 🐱 橘猫 / 🐈‍⬛ 黑猫 / 🐱 奶白猫 / 🐰 小兔 / 👾 小怪兽
 - **鼠标悬停**：弹气泡显示各项用量百分比 + 重置倒计时
 - **显示当前模型**：气泡标出正在用的模型（如 Opus 4.8），从本地会话日志读取
+- **燃尽预测**：气泡显示「照此速度 X%」或「约 X 后用尽」
+- **阈值通知**：用量过 80% / 95% 弹 macOS 通知（边沿触发，每次跨越只提醒一次，重置后重新武装）
 - **掉线提示**：登录过期/网络错误时宠物变半透明并显示红色「!」
-- **拖动**移动（位置记忆）· **大小**可调（大/中/小）· **右键**菜单 · **开机自启**
+- **拖动**移动（位置记忆）· **大小**可调（大/中/小）· **中/英双语**（跟随系统或手动）· **右键**菜单 · **开机自启**
 - 默认每 5 分钟自动刷新
 
 ### 数据源怎么配
@@ -66,8 +68,14 @@ open ClaudePet.app
 ```
 依赖：macOS 12+、Xcode 命令行工具（`swiftc`）。无第三方库。
 
+### 测试
+纯逻辑（燃尽预测 / 阈值 / 格式化 / 本地化）有零依赖单元测试（同样只需 `swiftc`，不用 Xcode）：
+```bash
+./test.sh
+```
+
 ### 右键菜单
-立即刷新 · 换形象 · 数据源(Claude/Codex 开关) · 登录 Claude · 开机自启动 · 退出
+立即刷新 · 换形象 · 大小 · 数据源(单选 + 增删中转) · 语言 · 登录 Claude · 开机自启动 · 退出
 
 ### 数据与隐私
 所有数据只在本地使用，不上传任何服务器。
@@ -140,8 +148,12 @@ and `bubbleText()`. PRs for other AIs welcome.
 | `Sources/Relay.swift` | 中转 API 余额数据源(多格式自动探测) |
 | `Sources/ModelInfo.swift` | 从本地会话日志读当前模型 |
 | `Sources/Keychain.swift` | 中转 API Key 的钥匙串存储 |
+| `Sources/Logic.swift` | 纯逻辑：燃尽预测 / 阈值 / 格式化（含单测）|
+| `Sources/I18n.swift`  | 中英本地化 |
+| `Sources/Notifier.swift` | 系统通知 |
 | `Sources/App.swift`   | 悬浮窗 / 气泡 / 交互 / 菜单 |
 | `Sources/main.swift`  | 入口 |
+| `Tests/`              | `./test.sh` 纯逻辑测试 |
 
 ## License
 MIT © 2026 awen

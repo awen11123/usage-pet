@@ -9,6 +9,9 @@ echo "==> 编译 Swift 源码"
 mkdir -p "$APP/Contents/MacOS"
 swiftc -O \
     -framework WebKit \
+    Sources/Logic.swift \
+    Sources/I18n.swift \
+    Sources/Notifier.swift \
     Sources/Pixel.swift \
     Sources/Pet.swift \
     Sources/ModelInfo.swift \
