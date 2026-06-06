@@ -14,7 +14,7 @@ enum History {
     }
     private static var cache: [String: [UsageSample]] = load()
     private static let maxAge: TimeInterval = 7 * 24 * 3600
-    private static let minGap: TimeInterval = 240         // 至少 4 分钟才记一条
+    private static let minGap: TimeInterval = 30          // 至少 30 秒才记一条(防手动连点)
     private static let maxPerSource = 600                 // 防爆
 
     /// 追加一条样本(自带去抖：太密会丢弃)

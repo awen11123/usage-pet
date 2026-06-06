@@ -596,7 +596,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 取该数据源的 sparkline 文本(7天)；样本太少返回 nil
     private func sparklineFor(_ source: String) -> String? {
         let samples = History.samples(source: source)
-        guard samples.count >= 4 else { return nil }
+        guard samples.count >= 2 else { return nil }
         return Sparkline.text(samples.map { $0.h }, width: 12)
     }
 
