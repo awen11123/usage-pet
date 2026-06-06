@@ -10,6 +10,7 @@ mkdir -p "$APP/Contents/MacOS"
 swiftc -O \
     -framework WebKit \
     Sources/Logic.swift \
+    Sources/History.swift \
     Sources/I18n.swift \
     Sources/Notifier.swift \
     Sources/Cartoon.swift \

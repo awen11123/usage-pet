@@ -135,26 +135,27 @@ final class PetView: NSView {
         }
     }
 
-    /// 思考气泡：右上方圆角矩形 + 三个点(随 bubbleDotPhase 变化)
+    /// 思考气泡：右上方圆角矩形 + 三个点(高对比度，在任何形象上都看得清)
     private func drawThinkingBubble() {
         let s = scale
         let bw = s * 4.6, bh = s * 2.4
         let bx = bounds.maxX - bw - s * 0.5
         let by = bounds.maxY - bh - s * 0.5
         let rect = NSRect(x: bx, y: by, width: bw, height: bh)
+        // 深底白点：在所有毛色上都对比强烈
         let path = NSBezierPath(roundedRect: rect, xRadius: bh*0.5, yRadius: bh*0.5)
-        NSColor.white.withAlphaComponent(0.95).setFill()
+        NSColor(srgbRed: 0.10, green: 0.10, blue: 0.13, alpha: 0.94).setFill()
         path.fill()
-        NSColor(srgbRed: 0.25, green: 0.22, blue: 0.22, alpha: 1).setStroke()
-        path.lineWidth = max(1.2, s * 0.18)
+        NSColor(srgbRed: 0.96, green: 0.96, blue: 0.98, alpha: 0.95).setStroke()
+        path.lineWidth = max(1.2, s * 0.14)
         path.stroke()
-        // 三个点(根据 phase 高亮)
+        // 三个点(白色，按 phase 高亮)
         let dotR = s * 0.32
         let cy = rect.midY
         let xs = [rect.midX - dotR * 3, rect.midX, rect.midX + dotR * 3]
         for (i, x) in xs.enumerated() {
-            let alpha: CGFloat = (i <= bubbleDotPhase) ? 1.0 : 0.35
-            NSColor(srgbRed: 0.25, green: 0.22, blue: 0.22, alpha: alpha).setFill()
+            let alpha: CGFloat = (i <= bubbleDotPhase) ? 1.0 : 0.30
+            NSColor(white: 1.0, alpha: alpha).setFill()
             NSBezierPath(ovalIn: NSRect(x: x - dotR, y: cy - dotR, width: dotR*2, height: dotR*2)).fill()
         }
     }
@@ -169,8 +170,15 @@ final class PetView: NSView {
               let oStart = dragOriginStart,
               let win = window else { return }
         let now = NSEvent.mouseLocation
-        win.setFrameOrigin(NSPoint(x: oStart.x + (now.x - mStart.x),
-                                   y: oStart.y + (now.y - mStart.y)))
+        var x = oStart.x + (now.x - mStart.x)
+        var y = oStart.y + (now.y - mStart.y)
+        // 夹紧到屏幕可见区域：至少保留半个宠物可见，防止拖出屏后再也找不回
+        if let vf = win.screen?.visibleFrame {
+            let w = win.frame.width, h = win.frame.height
+            x = max(vf.minX - w * 0.5, min(vf.maxX - w * 0.5, x))
+            y = max(vf.minY - h * 0.2, min(vf.maxY - h * 0.5, y))
+        }
+        win.setFrameOrigin(NSPoint(x: x, y: y))
     }
     override func mouseUp(with event: NSEvent) {
         dragMouseStart = nil
@@ -255,6 +263,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var currentMood: Mood = .happy
     var activityState: ActivityState = .idle
     var activityTimer: Timer?
+    /// 提醒阈值(warn%, crit%)
+    var alertThresholds: (warn: Double, crit: Double) {
+        get {
+            let w = UserDefaults.standard.object(forKey: "warnPct") as? Double ?? 80
+            let c = UserDefaults.standard.object(forKey: "critPct") as? Double ?? 95
+            return (w, c)
+        }
+        set {
+            UserDefaults.standard.set(newValue.warn, forKey: "warnPct")
+            UserDefaults.standard.set(newValue.crit, forKey: "critPct")
+        }
+    }
+    /// 刷新间隔(秒)，默认 300=5分钟
+    var refreshInterval: TimeInterval {
+        get { TimeInterval(UserDefaults.standard.object(forKey: "refreshSec") as? Int ?? 300) }
+        set { UserDefaults.standard.set(Int(newValue), forKey: "refreshSec"); startRefreshing() }
+    }
     var claudeModel: String?                  // 缓存当前模型，避免每次悬停扫盘
     var codexModel: String?
     var currentSkin: Skin = Skins.byId(UserDefaults.standard.string(forKey: "skinId") ?? "dog")
@@ -384,7 +409,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func startRefreshing() {
         refresh()
         refreshTimer?.invalidate()
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in
             self?.refresh()
         }
     }
@@ -397,7 +422,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.async {
                     guard let self = self else { return }
                     switch result {
-                    case .success(let snap): self.lastError = nil; self.snapshot = snap
+                    case .success(let snap):
+                        self.lastError = nil; self.snapshot = snap
+                        History.record(source: "claude", h: snap.fiveHour, w: snap.sevenDay)
                     case .failure(let err):  self.lastError = err.localizedDescription
                     }
                     self.updateMood(); self.refreshBubbleIfVisible()
@@ -408,7 +435,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.async {
                     guard let self = self else { return }
                     switch result {
-                    case .success(let snap): self.codexError = nil; self.codexSnap = snap
+                    case .success(let snap):
+                        self.codexError = nil; self.codexSnap = snap
+                        History.record(source: "codex", h: snap.fiveHour ?? 0, w: snap.weekly ?? 0)
                     case .failure(let err):  self.codexError = err.localizedDescription
                     }
                     self.updateMood(); self.refreshBubbleIfVisible()
@@ -422,6 +451,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     case .success(let snap):
                         self.relayErrors[acc.id] = nil; self.relaySnaps[acc.id] = snap
                         if let idx = idx { self.relayProbeHint[acc.id] = idx }   // 记住命中的探测
+                        if let p = snap.usedPercent {
+                            History.record(source: acc.id, h: p, w: snap.remaining ?? 0)
+                        }
                     case .failure(let err):
                         self.relayErrors[acc.id] = err.localizedDescription
                     }
@@ -462,7 +494,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 边沿触发的阈值通知：每次跨入更高档位只提醒一次，掉回后自动重新武装
     func checkNotify(util: Double, label: String) {
         let key = activeSource
-        let lvl = thresholdLevel(util)
+        let (warn, crit) = alertThresholds
+        let lvl = thresholdLevel(util, warn: warn, crit: crit)
         let last = notifyLevel[key] ?? 0
         if lvl > last {
             let fmt = lvl >= 2 ? L.t("notifCrit") : L.t("notifWarn")
@@ -531,6 +564,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             l.append("↗ \(f)")
         }
         if let r = countdownISO(s.fiveHourResets) { l.append("\(L.t("reset")) \(r)") }
+        if let sp = sparklineFor("claude") { l.append("7d \(sp)") }
         return l
     }
     private func codexLines() -> [String] {
@@ -539,6 +573,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let f = s.fiveHour { l.append("\(L.t("w5h")) \(pct(f))") }
         if let w = s.weekly   { l.append("\(L.t("week")) \(pct(w))") }
         if let r = countdownDate(s.fiveHourResets) { l.append("\(L.t("reset")) \(r)") }
+        if let sp = sparklineFor("codex") { l.append("7d \(sp)") }
         return l.isEmpty ? [L.t("noData")] : l
     }
     private func relayLines(_ acc: RelayAccount) -> [String] {
@@ -554,7 +589,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if let u = s.used {
             l.append("\(L.t("used")) \(Fmt.money(u, c))")
         }
+        if let sp = sparklineFor(acc.id) { l.append("7d \(sp)") }
         return l.isEmpty ? [L.t("noData")] : l
+    }
+
+    /// 取该数据源的 sparkline 文本(7天)；样本太少返回 nil
+    private func sparklineFor(_ source: String) -> String? {
+        let samples = History.samples(source: source)
+        guard samples.count >= 4 else { return nil }
+        return Sparkline.text(samples.map { $0.h }, width: 12)
     }
 
     private func secondsUntilReset(iso: String?) -> Double? {
@@ -655,14 +698,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         langItem.submenu = langMenu
         menu.addItem(langItem)
 
+        // 提醒阈值 子菜单
+        let thItem = NSMenuItem(title: L.t("threshold"), action: nil, keyEquivalent: "")
+        let thMenu = NSMenu()
+        let (curW, curC) = alertThresholds
+        for (k, w, c) in [("th_strict", 60.0, 80.0), ("th_default", 80.0, 95.0), ("th_relax", 90.0, 98.0)] {
+            let it = NSMenuItem(title: L.t(k), action: #selector(menuPickThreshold(_:)), keyEquivalent: "")
+            it.target = self; it.representedObject = "\(w),\(c)"
+            it.state = (abs(w - curW) < 0.1 && abs(c - curC) < 0.1) ? .on : .off
+            thMenu.addItem(it)
+        }
+        thItem.submenu = thMenu
+        menu.addItem(thItem)
+
+        // 刷新间隔 子菜单
+        let intItem = NSMenuItem(title: L.t("interval"), action: nil, keyEquivalent: "")
+        let intMenu = NSMenu()
+        for (k, sec) in [("i_1m", 60), ("i_3m", 180), ("i_5m", 300), ("i_15m", 900)] {
+            let it = NSMenuItem(title: L.t(k), action: #selector(menuPickInterval(_:)), keyEquivalent: "")
+            it.target = self; it.tag = sec
+            it.state = (Int(refreshInterval) == sec) ? .on : .off
+            intMenu.addItem(it)
+        }
+        intItem.submenu = intMenu
+        menu.addItem(intItem)
+
         let autoTitle = (SMAppService.mainApp.status == .enabled) ? "✓ \(L.t("autostart"))" : L.t("autostart")
         menu.addItem(withTitle: autoTitle, action: #selector(menuToggleAutoStart), keyEquivalent: "").target = self
         menu.addItem(.separator())
+        menu.addItem(withTitle: L.t("about"), action: #selector(menuAbout), keyEquivalent: "").target = self
         menu.addItem(withTitle: L.t("quit"), action: #selector(menuQuit), keyEquivalent: "q").target = self
         NSMenu.popUpContextMenu(menu, with: event, for: petView)
     }
     @objc func menuPickLang(_ sender: NSMenuItem) {
         if let code = sender.representedObject as? String { L.lang = code; refreshBubbleIfVisible() }
+    }
+    @objc func menuPickThreshold(_ sender: NSMenuItem) {
+        guard let s = sender.representedObject as? String else { return }
+        let parts = s.split(separator: ",").compactMap { Double($0) }
+        if parts.count == 2 {
+            alertThresholds = (parts[0], parts[1])
+            // 重置通知等级，让下次重新评估
+            notifyLevel.removeAll()
+            updateMood(); refreshBubbleIfVisible()
+        }
+    }
+    @objc func menuPickInterval(_ sender: NSMenuItem) {
+        refreshInterval = TimeInterval(sender.tag)
+    }
+    @objc func menuAbout() {
+        let a = NSAlert()
+        a.messageText = L.t("aboutTitle")
+        a.informativeText = L.t("aboutBody") + "\n\nhttps://github.com/awen11123/usage-pet"
+        a.addButton(withTitle: L.t("openRepo"))
+        a.addButton(withTitle: L.t("ok"))
+        NSApp.activate(ignoringOtherApps: true)
+        if a.runModal() == .alertFirstButtonReturn {
+            NSWorkspace.shared.open(URL(string: "https://github.com/awen11123/usage-pet")!)
+        }
     }
     @objc func menuRefresh() { refresh() }
     @objc func menuLogin() { ensureWeb(); web?.showLogin() }
