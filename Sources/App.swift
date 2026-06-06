@@ -3,6 +3,9 @@ import ServiceManagement
 
 // MARK: - 悬浮面板(无边框、透明、置顶、可拖动)
 final class PetPanel: NSPanel {
+    var onMouseDown: (() -> Void)?
+    var onMouseUp: (() -> Void)?
+
     init(size: NSSize) {
         super.init(contentRect: NSRect(origin: .zero, size: size),
                    styleMask: [.borderless, .nonactivatingPanel],
@@ -14,10 +17,24 @@ final class PetPanel: NSPanel {
         hasShadow = false
         collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         hidesOnDeactivate = false
+        isMovable = true
+        // mouseDownCanMoveWindow 依赖此开关才生效
         isMovableByWindowBackground = true
     }
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    /// 在事件分发的最上层截获 mouseDown/Up：mouseDownCanMoveWindow 让
+    /// 系统接管真正的拖动，但 view 的 mouseDown 就不再调用了——只有这里能
+    /// 准确知道用户开始/结束拖动，从而暂停/恢复浮动。
+    override func sendEvent(_ event: NSEvent) {
+        switch event.type {
+        case .leftMouseDown: onMouseDown?()
+        case .leftMouseUp:   onMouseUp?()
+        default: break
+        }
+        super.sendEvent(event)
+    }
 }
 
 // MARK: - 宠物视图
@@ -32,12 +49,8 @@ final class PetView: NSView {
     private var activity: ActivityState = .idle
     private var bubbleAnimTimer: Timer?
     private var bubbleDotPhase: Int = 0   // 0/1/2 控制 "." ".." "..."
-    private var dragMouseStart: NSPoint?  // 拖动起始的鼠标屏幕坐标
-    private var dragOriginStart: NSPoint? // 拖动起始的窗口原点
     var onRightClick: ((NSEvent) -> Void)?
     var onHoverChange: ((Bool) -> Void)?
-    var onMoved: (() -> Void)?
-    var onDragStart: (() -> Void)?
 
     init(skin: Skin, scale: CGFloat) {
         self.skin = skin
@@ -74,6 +87,24 @@ final class PetView: NSView {
         guard off != offline else { return }
         offline = off
         needsDisplay = true
+    }
+
+    private var savedActivityBeforeDrag: ActivityState?
+
+    func pauseAnimDuringDrag() {
+        // 停掉所有触发 needsDisplay 的定时器，避免拖动中频繁重绘导致抖动
+        animTimer?.invalidate(); animTimer = nil
+        bubbleAnimTimer?.invalidate(); bubbleAnimTimer = nil
+        savedActivityBeforeDrag = activity
+    }
+    func resumeAnimDuringDrag() {}   // 兼容旧名字，无操作
+    func resumeAnimAfterDrag() {
+        restartAnimation()
+        if let s = savedActivityBeforeDrag {
+            activity = .idle      // 强制先重置，再 setActivity 才会启动思考定时器
+            setActivity(s)
+            savedActivityBeforeDrag = nil
+        }
     }
 
     func setActivity(_ s: ActivityState) {
@@ -160,31 +191,9 @@ final class PetView: NSView {
         }
     }
 
-    override func mouseDown(with event: NSEvent) {
-        onDragStart?()                          // 暂停 bob
-        dragMouseStart = NSEvent.mouseLocation
-        dragOriginStart = window?.frame.origin
-    }
-    override func mouseDragged(with event: NSEvent) {
-        guard let mStart = dragMouseStart,
-              let oStart = dragOriginStart,
-              let win = window else { return }
-        let now = NSEvent.mouseLocation
-        var x = oStart.x + (now.x - mStart.x)
-        var y = oStart.y + (now.y - mStart.y)
-        // 夹紧到屏幕可见区域：至少保留半个宠物可见，防止拖出屏后再也找不回
-        if let vf = win.screen?.visibleFrame {
-            let w = win.frame.width, h = win.frame.height
-            x = max(vf.minX - w * 0.5, min(vf.maxX - w * 0.5, x))
-            y = max(vf.minY - h * 0.2, min(vf.maxY - h * 0.5, y))
-        }
-        win.setFrameOrigin(NSPoint(x: x, y: y))
-    }
-    override func mouseUp(with event: NSEvent) {
-        dragMouseStart = nil
-        dragOriginStart = nil
-        onMoved?()                              // 更新基点 + 恢复 bob + 保存
-    }
+    /// 告诉系统：点这个视图等于点窗口背景，让 macOS 接管拖动(完全无抖动)。
+    override var mouseDownCanMoveWindow: Bool { true }
+
     override func rightMouseDown(with event: NSEvent) { onRightClick?(event) }
     override func mouseEntered(with event: NSEvent) { onHoverChange?(true) }
     override func mouseExited(with event: NSEvent)  { onHoverChange?(false) }
@@ -305,18 +314,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         petView.onRightClick = { [weak self] e in self?.showMenu(e) }
         petView.onHoverChange = { [weak self] hovering in self?.toggleBubble(hovering) }
-        petView.onDragStart = { [weak self] in
-            // 彻底停掉浮动计时器，避免拖动时被偷偷拽回
+        // 拖动通过 PetView.mouseDownCanMoveWindow 让系统接管(完全无抖动)；
+        // 在 panel 的 sendEvent 截获 mouseDown/Up 来暂停/恢复浮动定时器。
+        panel.onMouseDown = { [weak self] in
             self?.bobTimer?.invalidate()
             self?.bobTimer = nil
             self?.bobPaused = true
+            self?.petView.pauseAnimDuringDrag()
         }
-        petView.onMoved = { [weak self] in
+        panel.onMouseUp = { [weak self] in
             guard let self = self else { return }
-            self.petBase = self.panel.frame.origin   // 用户拖到哪儿，基点就在哪儿
+            self.petBase = self.panel.frame.origin
             self.bobPaused = false
             self.savePosition()
-            self.startBob()                          // 重新启动浮动
+            self.startBob()
+            self.petView.resumeAnimAfterDrag()
         }
 
         // 恢复上次位置，没有则放屏幕右下角
@@ -544,15 +556,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func pct(_ v: Double) -> String { "\(Fmt.bar(v)) \(Int(v))%" }
 
-    private func forecastLine(util: Double, isoReset: String?, window: Double) -> String? {
-        guard let secs = secondsUntilReset(iso: isoReset), secs > 0 else { return nil }
-        switch Forecast.compute(util: util, secondsUntilReset: secs, windowSeconds: window) {
-        case .projected(let p): return String(format: L.t("pace"), p)
-        case .exhausted(let eta): return String(format: L.t("runout"), durationText(eta))
-        case .none: return nil
-        }
-    }
-
     private func claudeLines() -> [String] {
         if let e = lastError { return ["⚠️ \(e)"] }
         guard let s = snapshot else { return [L.t("loading")] }
@@ -560,9 +563,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                  "\(L.t("w7d")) \(pct(s.sevenDay))"]
         if let o = s.opus    { l.append("Opus  \(pct(o))") }
         if let so = s.sonnet { l.append("Sonn. \(pct(so))") }
-        if let f = forecastLine(util: s.sevenDay, isoReset: s.sevenDayResets, window: Window.sevenDay) {
-            l.append("↗ \(f)")
-        }
         if let r = countdownISO(s.fiveHourResets) { l.append("\(L.t("reset")) \(r)") }
         if let sp = sparklineFor("claude") { l.append("7d \(sp)") }
         return l
