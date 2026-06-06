@@ -107,6 +107,12 @@ extension CartoonColors {
 }
 
 // MARK: - 渲染器 (chibi 风：头大身小、大眼睛、点状腮红)
+/// 获取颜色亮度(0=黑 1=白)，用于判断要画深胡须还是浅胡须。
+private func bodyLuminance(_ c: NSColor) -> CGFloat {
+    let rgb = c.usingColorSpace(.sRGB) ?? c
+    return (rgb.redComponent + rgb.greenComponent + rgb.blueComponent) / 3
+}
+
 enum CartoonRenderer {
     static func image(skin: Skin, mood: Mood, frame: Int, size S: CGFloat) -> NSImage {
         let img = NSImage(size: NSSize(width: S, height: S))
@@ -165,13 +171,14 @@ enum CartoonRenderer {
         let eyeY = S * 0.56
         drawEyes(at: eyeY, mood: mood, frame: frame, c: c, S: S, lw: lw)
 
-        // 小鼻子(更小，居中)
-        let noseR = S * 0.035
-        let nose = NSBezierPath(ovalIn: NSRect(x: S*0.50 - noseR, y: S*0.46, width: noseR*2, height: noseR*2 * 0.85))
-        c.outline.setFill(); nose.fill()
+        // 按动物种类(耳型)画鼻子
+        drawNose(ears: skin.ears, c: c, S: S, lw: lw)
 
         // 嘴
-        drawMouth(mood: mood, frame: frame, c: c, S: S, lw: lw, stroke: stroke)
+        drawMouth(ears: skin.ears, mood: mood, frame: frame, c: c, S: S, lw: lw, stroke: stroke)
+
+        // 猫的胡须 / 兔的门牙
+        drawSpeciesExtras(ears: skin.ears, mood: mood, c: c, S: S, lw: lw)
 
         // 慌张专属：汗滴
         if mood == .panic {
@@ -312,22 +319,140 @@ enum CartoonRenderer {
         }
     }
 
-    private static func drawMouth(mood: Mood, frame: Int, c: CartoonColors,
+    // MARK: 按动物种类(耳型)画鼻子
+    private static func drawNose(ears: EarStyle, c: CartoonColors, S: CGFloat, lw: CGFloat) {
+        switch ears {
+        case .floppy:   // 狗：圆鼻头(深色)
+            let r = S * 0.035
+            let p = NSBezierPath(ovalIn: NSRect(x: S*0.50 - r, y: S*0.46, width: r*2, height: r*1.7))
+            c.outline.setFill(); p.fill()
+        case .triangle: // 猫：粉色倒三角小鼻子
+            let p = NSBezierPath()
+            p.move(to: NSPoint(x: S*0.46, y: S*0.485))
+            p.line(to: NSPoint(x: S*0.54, y: S*0.485))
+            p.line(to: NSPoint(x: S*0.50, y: S*0.44))
+            p.close()
+            c.accent.setFill(); p.fill()
+            c.outline.setStroke(); p.lineWidth = lw*0.55; p.stroke()
+        case .longUp:   // 兔：粉色心形小鼻子(简化为小 Y)
+            let p = NSBezierPath()
+            p.move(to: NSPoint(x: S*0.50, y: S*0.44))
+            p.curve(to: NSPoint(x: S*0.46, y: S*0.49),
+                    controlPoint1: NSPoint(x: S*0.47, y: S*0.44),
+                    controlPoint2: NSPoint(x: S*0.46, y: S*0.47))
+            p.line(to: NSPoint(x: S*0.50, y: S*0.475))
+            p.line(to: NSPoint(x: S*0.54, y: S*0.49))
+            p.curve(to: NSPoint(x: S*0.50, y: S*0.44),
+                    controlPoint1: NSPoint(x: S*0.54, y: S*0.47),
+                    controlPoint2: NSPoint(x: S*0.53, y: S*0.44))
+            p.close()
+            c.accent.setFill(); p.fill()
+            c.outline.setStroke(); p.lineWidth = lw*0.5; p.stroke()
+        case .horn:     // 怪兽：小圆鼻
+            let r = S * 0.028
+            let p = NSBezierPath(ovalIn: NSRect(x: S*0.50 - r, y: S*0.46, width: r*2, height: r*2))
+            c.outline.setFill(); p.fill()
+        }
+    }
+
+    // MARK: 物种额外特征
+    private static func drawSpeciesExtras(ears: EarStyle, mood: Mood,
+                                          c: CartoonColors, S: CGFloat, lw: CGFloat) {
+        switch ears {
+        case .triangle:
+            // 猫胡须：根据毛色亮度选深/浅，保证可见
+            let whiskerW: CGFloat = max(1, S * 0.012)
+            let bL = bodyLuminance(c.body)
+            let wc = bL < 0.4
+                ? NSColor(white: 0.88, alpha: 0.95)   // 深色毛 → 浅胡须
+                : NSColor(white: 0.32, alpha: 0.85)   // 浅色毛 → 深胡须
+            wc.setStroke()
+            for sign in [-1.0, 1.0] as [CGFloat] {
+                for (i, dyFactor) in [-1.4, 0.0, 1.4].enumerated() {
+                    _ = i
+                    let p = NSBezierPath()
+                    let baseY = S * 0.46
+                    let x1 = S*0.50 + sign * S*0.06
+                    let x2 = S*0.50 + sign * S*0.20
+                    let y1 = baseY + S * 0.012 * CGFloat(dyFactor)
+                    let y2 = baseY + S * 0.018 * CGFloat(dyFactor)
+                    p.move(to: NSPoint(x: x1, y: y1))
+                    p.line(to: NSPoint(x: x2, y: y2))
+                    p.lineWidth = whiskerW
+                    p.stroke()
+                }
+            }
+        case .longUp:
+            // 兔门牙：嘴下方两颗白色小方块(慌张时不画，免得乱)
+            if mood == .panic { return }
+            let tw = S * 0.038
+            let th = S * 0.055
+            let ty = S * 0.40 - th - S*0.005
+            NSColor.white.setFill()
+            for dx in [-1.0, 1.0] as [CGFloat] {
+                let r = NSRect(x: S*0.50 + dx * S*0.003 + (dx < 0 ? -tw : 0),
+                               y: ty, width: tw, height: th)
+                let p = NSBezierPath(roundedRect: r, xRadius: S*0.01, yRadius: S*0.01)
+                p.fill()
+                c.outline.setStroke(); p.lineWidth = lw*0.45; p.stroke()
+            }
+            // 小胡须(也加，让兔子嗅嗅感更强)
+            let bL = bodyLuminance(c.body)
+            let wc = bL < 0.4
+                ? NSColor(white: 0.85, alpha: 0.85)
+                : NSColor(white: 0.40, alpha: 0.80)
+            wc.setStroke()
+            for sign in [-1.0, 1.0] as [CGFloat] {
+                for dyFactor in [-0.8, 0.8] as [CGFloat] {
+                    let p = NSBezierPath()
+                    let baseY = S * 0.46
+                    p.move(to: NSPoint(x: S*0.50 + sign * S*0.08, y: baseY + S*0.010*dyFactor))
+                    p.line(to: NSPoint(x: S*0.50 + sign * S*0.18, y: baseY + S*0.018*dyFactor))
+                    p.lineWidth = max(1, S * 0.010)
+                    p.stroke()
+                }
+            }
+        default: break
+        }
+    }
+
+    private static func drawMouth(ears: EarStyle, mood: Mood, frame: Int, c: CartoonColors,
                                   S: CGFloat, lw: CGFloat,
                                   stroke: (NSBezierPath, CGFloat) -> Void) {
         let mouthY = S * 0.40
         switch mood {
         case .happy:
-            // 大笑 + 舌头
-            let m = NSBezierPath()
-            m.move(to: NSPoint(x: S*0.42, y: mouthY))
-            m.curve(to: NSPoint(x: S*0.58, y: mouthY),
-                    controlPoint1: NSPoint(x: S*0.45, y: mouthY - S*0.07),
-                    controlPoint2: NSPoint(x: S*0.55, y: mouthY - S*0.07))
-            m.line(to: NSPoint(x: S*0.42, y: mouthY))
-            m.close(); c.outline.setFill(); m.fill()
-            let tongue = NSBezierPath(ovalIn: NSRect(x: S*0.46, y: mouthY - S*0.06, width: S*0.08, height: S*0.04))
-            c.accent.setFill(); tongue.fill()
+            switch ears {
+            case .triangle:
+                // 猫嘴 "ω" 形
+                let m = NSBezierPath()
+                m.move(to: NSPoint(x: S*0.42, y: mouthY))
+                m.curve(to: NSPoint(x: S*0.50, y: mouthY - S*0.005),
+                        controlPoint1: NSPoint(x: S*0.45, y: mouthY - S*0.035),
+                        controlPoint2: NSPoint(x: S*0.475, y: mouthY - S*0.035))
+                m.curve(to: NSPoint(x: S*0.58, y: mouthY),
+                        controlPoint1: NSPoint(x: S*0.525, y: mouthY - S*0.035),
+                        controlPoint2: NSPoint(x: S*0.55, y: mouthY - S*0.035))
+                stroke(m, lw * 0.9)
+            case .longUp:
+                // 兔嘴 "v"(配上面的门牙)
+                let m = NSBezierPath()
+                m.move(to: NSPoint(x: S*0.46, y: mouthY))
+                m.line(to: NSPoint(x: S*0.50, y: mouthY - S*0.025))
+                m.line(to: NSPoint(x: S*0.54, y: mouthY))
+                stroke(m, lw * 0.9)
+            default:
+                // 狗/怪兽 张嘴 + 舌头
+                let m = NSBezierPath()
+                m.move(to: NSPoint(x: S*0.42, y: mouthY))
+                m.curve(to: NSPoint(x: S*0.58, y: mouthY),
+                        controlPoint1: NSPoint(x: S*0.45, y: mouthY - S*0.07),
+                        controlPoint2: NSPoint(x: S*0.55, y: mouthY - S*0.07))
+                m.line(to: NSPoint(x: S*0.42, y: mouthY))
+                m.close(); c.outline.setFill(); m.fill()
+                let tongue = NSBezierPath(ovalIn: NSRect(x: S*0.46, y: mouthY - S*0.06, width: S*0.08, height: S*0.04))
+                c.accent.setFill(); tongue.fill()
+            }
         case .neutral:
             let m = NSBezierPath()
             m.move(to: NSPoint(x: S*0.45, y: mouthY))
