@@ -175,6 +175,15 @@ private func bodyLuminance(_ c: NSColor) -> CGFloat {
 
 enum CartoonRenderer {
     static func image(skin: Skin, mood: Mood, frame: Int, size S: CGFloat) -> NSImage {
+        // 部分物种有独特造型，单独渲染
+        switch skin.species {
+        case .penguin: return renderPenguin(skin: skin, mood: mood, frame: frame, S: S)
+        case .frog:    return renderFrog(skin: skin, mood: mood, frame: frame, S: S)
+        case .hamster: return renderHamster(skin: skin, mood: mood, frame: frame, S: S)
+        case .panda:   return renderPanda(skin: skin, mood: mood, frame: frame, S: S)
+        case .monster: return renderMonster(skin: skin, mood: mood, frame: frame, S: S)
+        default: break
+        }
         let img = NSImage(size: NSSize(width: S, height: S))
         img.lockFocus()
         let c = skin.colors
@@ -713,5 +722,482 @@ enum CartoonRenderer {
         drop.close()
         rgb(0.40,0.70,0.98).setFill(); drop.fill()
         stroke(drop, lw*0.5)
+    }
+
+    // MARK: ───── 通用工具：在指定位置画眼睛/汗滴 ─────
+    private static func drawEyesAt(lx: CGFloat, rx: CGFloat, y: CGFloat,
+                                   r: CGFloat = 0,
+                                   mood: Mood, frame: Int, c: CartoonColors,
+                                   S: CGFloat, lw: CGFloat) {
+        if frame == 1 && (mood == .happy || mood == .neutral) {
+            for cx in [lx, rx] {
+                let p = NSBezierPath()
+                p.move(to: NSPoint(x: cx - S*0.07, y: y + S*0.01))
+                p.curve(to: NSPoint(x: cx + S*0.07, y: y + S*0.01),
+                        controlPoint1: NSPoint(x: cx - S*0.03, y: y - S*0.04),
+                        controlPoint2: NSPoint(x: cx + S*0.03, y: y - S*0.04))
+                c.outline.setStroke(); p.lineWidth = lw; p.stroke()
+            }
+            return
+        }
+        for cx in [lx, rx] {
+            switch mood {
+            case .panic:
+                let r2 = r > 0 ? r : S * 0.085
+                let rect = NSRect(x: cx - r2, y: y - r2, width: r2*2, height: r2*2)
+                NSColor.white.setFill(); NSBezierPath(ovalIn: rect).fill()
+                c.outline.setStroke(); let p = NSBezierPath(ovalIn: rect); p.lineWidth = lw*0.85; p.stroke()
+                let pr = r2 * 0.45
+                c.eyeMain.setFill()
+                NSBezierPath(ovalIn: NSRect(x: cx - pr, y: y - pr, width: pr*2, height: pr*2)).fill()
+            case .worried:
+                let r2 = r > 0 ? r : S * 0.075
+                c.eyeMain.setFill()
+                NSBezierPath(ovalIn: NSRect(x: cx - r2, y: y - r2*0.9, width: r2*2, height: r2*2)).fill()
+                NSColor.white.setFill()
+                NSBezierPath(ovalIn: NSRect(x: cx - r2*0.30, y: y + r2*0.25, width: r2*0.85, height: r2*0.85)).fill()
+            default:
+                let r2 = r > 0 ? r : S * 0.085
+                c.eyeMain.setFill()
+                NSBezierPath(ovalIn: NSRect(x: cx - r2, y: y - r2, width: r2*2, height: r2*2)).fill()
+                NSColor.white.setFill()
+                NSBezierPath(ovalIn: NSRect(x: cx - r2*0.45, y: y + r2*0.20, width: r2*0.85, height: r2*0.85)).fill()
+                NSBezierPath(ovalIn: NSRect(x: cx + r2*0.25, y: y - r2*0.55, width: r2*0.35, height: r2*0.35)).fill()
+            }
+        }
+    }
+    private static func drawSweatAt(x: CGFloat, y: CGFloat, S: CGFloat,
+                                    outline: NSColor, lw: CGFloat) {
+        let drop = NSBezierPath()
+        drop.move(to: NSPoint(x: x, y: y + S*0.06))
+        drop.curve(to: NSPoint(x: x - S*0.028, y: y - S*0.02),
+                   controlPoint1: NSPoint(x: x - S*0.025, y: y + S*0.06),
+                   controlPoint2: NSPoint(x: x - S*0.045, y: y + S*0.02))
+        drop.curve(to: NSPoint(x: x + S*0.028, y: y - S*0.02),
+                   controlPoint1: NSPoint(x: x - S*0.01, y: y - S*0.045),
+                   controlPoint2: NSPoint(x: x + S*0.01, y: y - S*0.045))
+        drop.curve(to: NSPoint(x: x, y: y + S*0.06),
+                   controlPoint1: NSPoint(x: x + S*0.045, y: y + S*0.02),
+                   controlPoint2: NSPoint(x: x + S*0.025, y: y + S*0.06))
+        drop.close()
+        rgb(0.40,0.70,0.98).setFill(); drop.fill()
+        outline.setStroke(); drop.lineWidth = lw*0.5; drop.stroke()
+    }
+    private static func cheekDots(_ leftX: CGFloat, _ rightX: CGFloat, y: CGFloat,
+                                  r: CGFloat, c: CartoonColors) {
+        c.cheek.setFill()
+        NSBezierPath(ovalIn: NSRect(x: leftX - r, y: y - r, width: r*2, height: r*2)).fill()
+        NSBezierPath(ovalIn: NSRect(x: rightX - r, y: y - r, width: r*2, height: r*2)).fill()
+    }
+
+    // MARK: ───── 🐹 仓鼠：整球圆滚 + 大鼓腮 ─────
+    private static func renderHamster(skin: Skin, mood: Mood, frame: Int, S: CGFloat) -> NSImage {
+        let img = NSImage(size: NSSize(width: S, height: S))
+        img.lockFocus()
+        let c = skin.colors
+        let lw = max(2, S * 0.024)
+
+        NSColor.black.withAlphaComponent(0.24).setFill()
+        NSBezierPath(ovalIn: NSRect(x: S*0.20, y: S*0.02, width: S*0.60, height: S*0.06)).fill()
+
+        // 一整个圆球(头身合一)
+        let body = NSBezierPath(ovalIn: NSRect(x: S*0.10, y: S*0.08, width: S*0.80, height: S*0.82))
+        c.body.setFill(); body.fill()
+        NSGraphicsContext.current!.saveGraphicsState()
+        body.addClip()
+        // 浅色肚区
+        c.secondary.setFill()
+        NSBezierPath(ovalIn: NSRect(x: S*0.26, y: S*0.10, width: S*0.48, height: S*0.46)).fill()
+        // 头顶高光
+        NSColor.white.withAlphaComponent(0.40).setFill()
+        NSBezierPath(ovalIn: NSRect(x: S*0.24, y: S*0.74, width: S*0.32, height: S*0.12)).fill()
+        // 头下沿暗部
+        c.bodyDk.withAlphaComponent(0.40).setFill()
+        NSBezierPath(rect: NSRect(x: 0, y: S*0.08, width: S, height: S*0.10)).fill()
+        NSGraphicsContext.current!.restoreGraphicsState()
+        c.outline.setStroke(); body.lineWidth = lw; body.stroke()
+
+        // 小圆耳
+        for cx in [S*0.30, S*0.70] {
+            let r = NSBezierPath(ovalIn: NSRect(x: cx - S*0.06, y: S*0.80, width: S*0.12, height: S*0.12))
+            c.body.setFill(); r.fill()
+            let inner = NSBezierPath(ovalIn: NSRect(x: cx - S*0.03, y: S*0.82, width: S*0.06, height: S*0.07))
+            NSColor(srgbRed: 0.95, green: 0.55, blue: 0.55, alpha: 0.7).setFill(); inner.fill()
+            c.outline.setStroke(); r.lineWidth = lw; r.stroke()
+        }
+
+        // 大鼓腮(贴在脸两侧)
+        c.cheek.setFill()
+        NSBezierPath(ovalIn: NSRect(x: S*0.10, y: S*0.30, width: S*0.22, height: S*0.18)).fill()
+        NSBezierPath(ovalIn: NSRect(x: S*0.68, y: S*0.30, width: S*0.22, height: S*0.18)).fill()
+
+        // 眼睛(位置整体在中线，因为没有头身分离)
+        drawEyesAt(lx: S*0.38, rx: S*0.62, y: S*0.52, mood: mood, frame: frame, c: c, S: S, lw: lw)
+
+        // 圆鼻
+        let nr = S * 0.030
+        let nose = NSBezierPath(ovalIn: NSRect(x: S*0.50 - nr, y: S*0.42, width: nr*2, height: nr*1.7))
+        c.outline.setFill(); nose.fill()
+
+        // 嘴(小弧)
+        let mouthY: CGFloat = S * 0.36
+        if mood == .panic {
+            let m = NSBezierPath(ovalIn: NSRect(x: S*0.42, y: mouthY - S*0.04, width: S*0.16, height: S*0.08))
+            rgb(0.90,0.25,0.20).setFill(); m.fill()
+            c.outline.setStroke(); m.lineWidth = lw; m.stroke()
+        } else {
+            let m = NSBezierPath()
+            m.move(to: NSPoint(x: S*0.45, y: mouthY))
+            m.curve(to: NSPoint(x: S*0.55, y: mouthY),
+                    controlPoint1: NSPoint(x: S*0.47, y: mouthY - S*0.025),
+                    controlPoint2: NSPoint(x: S*0.53, y: mouthY - S*0.025))
+            c.outline.setStroke(); m.lineWidth = lw; m.stroke()
+        }
+
+        if mood == .panic {
+            drawSweatAt(x: frame == 0 ? S*0.88 : S*0.12, y: S*0.72, S: S, outline: c.outline, lw: lw)
+        }
+        img.unlockFocus()
+        return img
+    }
+
+    // MARK: ───── 🐧 企鹅：蛋形 + 双侧鳍 + 橙喙橙脚 ─────
+    private static func renderPenguin(skin: Skin, mood: Mood, frame: Int, S: CGFloat) -> NSImage {
+        let img = NSImage(size: NSSize(width: S, height: S))
+        img.lockFocus()
+        let c = skin.colors
+        let lw = max(2, S * 0.024)
+
+        NSColor.black.withAlphaComponent(0.24).setFill()
+        NSBezierPath(ovalIn: NSRect(x: S*0.24, y: S*0.04, width: S*0.52, height: S*0.05)).fill()
+
+        // 橙色脚(蹼)
+        for x in [S*0.30, S*0.55] {
+            let p = NSBezierPath(ovalIn: NSRect(x: x, y: S*0.04, width: S*0.15, height: S*0.07))
+            c.accent.setFill(); p.fill()
+            c.outline.setStroke(); p.lineWidth = lw*0.7; p.stroke()
+        }
+
+        // 主体蛋形(垂直拉长椭圆)
+        let body = NSBezierPath(ovalIn: NSRect(x: S*0.18, y: S*0.08, width: S*0.64, height: S*0.86))
+        c.body.setFill(); body.fill()
+        NSGraphicsContext.current!.saveGraphicsState()
+        body.addClip()
+        NSColor.white.withAlphaComponent(0.20).setFill()
+        NSBezierPath(ovalIn: NSRect(x: S*0.26, y: S*0.78, width: S*0.22, height: S*0.10)).fill()
+        NSGraphicsContext.current!.restoreGraphicsState()
+        c.outline.setStroke(); body.lineWidth = lw; body.stroke()
+
+        // 白肚白脸(大圆覆盖前面)
+        let belly = NSBezierPath(ovalIn: NSRect(x: S*0.27, y: S*0.12, width: S*0.46, height: S*0.66))
+        c.secondary.setFill(); belly.fill()
+
+        // 鳍(两侧黑色短椭圆，向外突出感)
+        for sign in [-1.0, 1.0] as [CGFloat] {
+            let cx = S*0.50 + sign * S*0.30
+            let p = NSBezierPath(ovalIn: NSRect(x: cx - S*0.05, y: S*0.30, width: S*0.10, height: S*0.30))
+            c.body.setFill(); p.fill()
+            c.outline.setStroke(); p.lineWidth = lw*0.7; p.stroke()
+        }
+
+        // 橙色三角喙(尖端朝下)
+        let beak = NSBezierPath()
+        beak.move(to: NSPoint(x: S*0.43, y: S*0.55))
+        beak.line(to: NSPoint(x: S*0.57, y: S*0.55))
+        beak.line(to: NSPoint(x: S*0.50, y: S*0.43))
+        beak.close()
+        c.accent.setFill(); beak.fill()
+        c.outline.setStroke(); beak.lineWidth = lw*0.6; beak.stroke()
+        let mid = NSBezierPath()
+        mid.move(to: NSPoint(x: S*0.43, y: S*0.55))
+        mid.line(to: NSPoint(x: S*0.57, y: S*0.55))
+        c.outline.setStroke(); mid.lineWidth = lw*0.5; mid.stroke()
+
+        // 眼睛(小，在喙上方)
+        drawEyesAt(lx: S*0.42, rx: S*0.58, y: S*0.65, r: S*0.045, mood: mood, frame: frame, c: c, S: S, lw: lw)
+
+        if mood == .panic {
+            drawSweatAt(x: frame == 0 ? S*0.86 : S*0.14, y: S*0.72, S: S, outline: c.outline, lw: lw)
+        }
+        img.unlockFocus()
+        return img
+    }
+
+    // MARK: ───── 🐸 青蛙：扁矮身 + 头顶鼓眼球 + 宽嘴 ─────
+    private static func renderFrog(skin: Skin, mood: Mood, frame: Int, S: CGFloat) -> NSImage {
+        let img = NSImage(size: NSSize(width: S, height: S))
+        img.lockFocus()
+        let c = skin.colors
+        let lw = max(2, S * 0.024)
+
+        NSColor.black.withAlphaComponent(0.24).setFill()
+        NSBezierPath(ovalIn: NSRect(x: S*0.18, y: S*0.04, width: S*0.64, height: S*0.06)).fill()
+
+        // 蛙脚(两侧蹼)
+        for sign in [-1.0, 1.0] as [CGFloat] {
+            let cx = S*0.50 + sign * S*0.32
+            let p = NSBezierPath(ovalIn: NSRect(x: cx - S*0.07, y: S*0.06, width: S*0.14, height: S*0.10))
+            c.body.setFill(); p.fill()
+            c.outline.setStroke(); p.lineWidth = lw; p.stroke()
+        }
+
+        // 扁矮身(宽椭圆) - 占下半部
+        let body = NSBezierPath(ovalIn: NSRect(x: S*0.08, y: S*0.10, width: S*0.84, height: S*0.58))
+        c.body.setFill(); body.fill()
+        NSGraphicsContext.current!.saveGraphicsState()
+        body.addClip()
+        // 浅黄绿肚
+        c.secondary.setFill()
+        NSBezierPath(ovalIn: NSRect(x: S*0.22, y: S*0.12, width: S*0.56, height: S*0.28)).fill()
+        // 头顶高光
+        NSColor.white.withAlphaComponent(0.30).setFill()
+        NSBezierPath(ovalIn: NSRect(x: S*0.30, y: S*0.55, width: S*0.30, height: S*0.10)).fill()
+        NSGraphicsContext.current!.restoreGraphicsState()
+        c.outline.setStroke(); body.lineWidth = lw; body.stroke()
+
+        // 头顶两个大鼓眼球(立体感)
+        let eyeY = S * 0.74
+        for cx in [S*0.30, S*0.70] {
+            // 眼球底部圆(白)
+            let r: CGFloat = S * 0.13
+            let rect = NSRect(x: cx - r, y: eyeY - r, width: r*2, height: r*2)
+            NSColor.white.setFill(); NSBezierPath(ovalIn: rect).fill()
+            // 高光顶部
+            NSColor.white.withAlphaComponent(0.6).setFill()
+            NSBezierPath(ovalIn: NSRect(x: cx - r*0.4, y: eyeY + r*0.3, width: r*0.8, height: r*0.6)).fill()
+            c.outline.setStroke(); let b = NSBezierPath(ovalIn: rect); b.lineWidth = lw*0.8; b.stroke()
+            // 瞳孔
+            if frame == 1 && mood == .happy {
+                let p = NSBezierPath()
+                p.move(to: NSPoint(x: cx - r*0.6, y: eyeY))
+                p.curve(to: NSPoint(x: cx + r*0.6, y: eyeY),
+                        controlPoint1: NSPoint(x: cx - r*0.3, y: eyeY - r*0.5),
+                        controlPoint2: NSPoint(x: cx + r*0.3, y: eyeY - r*0.5))
+                c.outline.setStroke(); p.lineWidth = lw*0.7; p.stroke()
+            } else {
+                let pr: CGFloat = mood == .panic ? r*0.30 : r*0.55
+                c.eyeMain.setFill()
+                NSBezierPath(ovalIn: NSRect(x: cx - pr, y: eyeY - pr*0.7, width: pr*2, height: pr*2)).fill()
+                NSColor.white.setFill()
+                NSBezierPath(ovalIn: NSRect(x: cx - pr*0.2, y: eyeY + pr*0.3, width: pr*0.5, height: pr*0.5)).fill()
+            }
+        }
+
+        // 两个小鼻孔
+        c.outline.setFill()
+        NSBezierPath(ovalIn: NSRect(x: S*0.45, y: S*0.52, width: S*0.022, height: S*0.022)).fill()
+        NSBezierPath(ovalIn: NSRect(x: S*0.535, y: S*0.52, width: S*0.022, height: S*0.022)).fill()
+
+        // 宽大嘴(跨脸)
+        let mouthY: CGFloat = S * 0.32
+        switch mood {
+        case .happy:
+            let m = NSBezierPath()
+            m.move(to: NSPoint(x: S*0.18, y: mouthY + S*0.04))
+            m.curve(to: NSPoint(x: S*0.82, y: mouthY + S*0.04),
+                    controlPoint1: NSPoint(x: S*0.32, y: mouthY - S*0.10),
+                    controlPoint2: NSPoint(x: S*0.68, y: mouthY - S*0.10))
+            c.outline.setStroke(); m.lineWidth = lw*1.1; m.stroke()
+        case .panic:
+            let r = NSRect(x: S*0.34, y: mouthY - S*0.06, width: S*0.32, height: S*0.12)
+            rgb(0.90,0.25,0.20).setFill()
+            NSBezierPath(ovalIn: r).fill()
+            c.outline.setStroke(); let p = NSBezierPath(ovalIn: r); p.lineWidth = lw; p.stroke()
+        default:
+            let m = NSBezierPath()
+            m.move(to: NSPoint(x: S*0.22, y: mouthY))
+            m.curve(to: NSPoint(x: S*0.78, y: mouthY),
+                    controlPoint1: NSPoint(x: S*0.38, y: mouthY - S*0.04),
+                    controlPoint2: NSPoint(x: S*0.62, y: mouthY - S*0.04))
+            c.outline.setStroke(); m.lineWidth = lw*0.9; m.stroke()
+        }
+
+        if mood == .panic {
+            drawSweatAt(x: frame == 0 ? S*0.88 : S*0.12, y: S*0.60, S: S, outline: c.outline, lw: lw)
+        }
+        img.unlockFocus()
+        return img
+    }
+
+    // MARK: ───── 🐼 熊猫：桶状胖身 + 黑手脚 + 黑眼圈 ─────
+    private static func renderPanda(skin: Skin, mood: Mood, frame: Int, S: CGFloat) -> NSImage {
+        let img = NSImage(size: NSSize(width: S, height: S))
+        img.lockFocus()
+        let c = skin.colors
+        let lw = max(2, S * 0.024)
+
+        NSColor.black.withAlphaComponent(0.24).setFill()
+        NSBezierPath(ovalIn: NSRect(x: S*0.18, y: S*0.02, width: S*0.64, height: S*0.06)).fill()
+
+        // 桶状胖身(白色，比标准模板宽)
+        let body = NSBezierPath(roundedRect: NSRect(x: S*0.18, y: S*0.06, width: S*0.64, height: S*0.50),
+                                xRadius: S*0.22, yRadius: S*0.22)
+        c.body.setFill(); body.fill()
+        c.outline.setStroke(); body.lineWidth = lw; body.stroke()
+
+        // 黑手脚(身体两侧的小黑椭圆，模拟熊猫四肢)
+        // 左手
+        let lh = NSBezierPath(ovalIn: NSRect(x: S*0.10, y: S*0.20, width: S*0.16, height: S*0.22))
+        c.secondary.setFill(); lh.fill(); c.outline.setStroke(); lh.lineWidth = lw; lh.stroke()
+        // 右手
+        let rh = NSBezierPath(ovalIn: NSRect(x: S*0.74, y: S*0.20, width: S*0.16, height: S*0.22))
+        c.secondary.setFill(); rh.fill(); c.outline.setStroke(); rh.lineWidth = lw; rh.stroke()
+        // 左脚
+        let lf = NSBezierPath(ovalIn: NSRect(x: S*0.26, y: S*0.04, width: S*0.18, height: S*0.10))
+        c.secondary.setFill(); lf.fill(); c.outline.setStroke(); lf.lineWidth = lw; lf.stroke()
+        // 右脚
+        let rf = NSBezierPath(ovalIn: NSRect(x: S*0.56, y: S*0.04, width: S*0.18, height: S*0.10))
+        c.secondary.setFill(); rf.fill(); c.outline.setStroke(); rf.lineWidth = lw; rf.stroke()
+
+        // 黑色圆耳
+        for cx in [S*0.22, S*0.78] {
+            let r = NSBezierPath(ovalIn: NSRect(x: cx - S*0.09, y: S*0.80, width: S*0.18, height: S*0.18))
+            c.ear.setFill(); r.fill(); c.outline.setStroke(); r.lineWidth = lw; r.stroke()
+        }
+
+        // 头
+        let head = NSBezierPath(ovalIn: NSRect(x: S*0.14, y: S*0.40, width: S*0.72, height: S*0.55))
+        c.body.setFill(); head.fill()
+        NSGraphicsContext.current!.saveGraphicsState()
+        head.addClip()
+        // 头顶高光
+        NSColor.white.withAlphaComponent(0.40).setFill()
+        NSBezierPath(ovalIn: NSRect(x: S*0.25, y: S*0.78, width: S*0.30, height: S*0.12)).fill()
+        // 黑眼圈
+        c.secondary.setFill()
+        NSBezierPath(ovalIn: NSRect(x: S*0.21, y: S*0.57, width: S*0.22, height: S*0.20)).fill()
+        NSBezierPath(ovalIn: NSRect(x: S*0.57, y: S*0.57, width: S*0.22, height: S*0.20)).fill()
+        NSGraphicsContext.current!.restoreGraphicsState()
+        c.outline.setStroke(); head.lineWidth = lw; head.stroke()
+
+        // 眼睛(在黑眼圈中央)
+        drawEyesAt(lx: S*0.32, rx: S*0.68, y: S*0.67, r: S*0.045, mood: mood, frame: frame, c: c, S: S, lw: lw)
+
+        // 鼻
+        let nr = S * 0.030
+        let nose = NSBezierPath(ovalIn: NSRect(x: S*0.50 - nr, y: S*0.54, width: nr*2, height: nr*1.7))
+        c.outline.setFill(); nose.fill()
+
+        // 嘴
+        let mouthY: CGFloat = S * 0.48
+        if mood == .panic {
+            let m = NSBezierPath(ovalIn: NSRect(x: S*0.42, y: mouthY - S*0.06, width: S*0.16, height: S*0.10))
+            rgb(0.90,0.25,0.20).setFill(); m.fill()
+            c.outline.setStroke(); m.lineWidth = lw; m.stroke()
+        } else {
+            let m = NSBezierPath()
+            m.move(to: NSPoint(x: S*0.45, y: mouthY))
+            m.curve(to: NSPoint(x: S*0.55, y: mouthY),
+                    controlPoint1: NSPoint(x: S*0.47, y: mouthY - S*0.025),
+                    controlPoint2: NSPoint(x: S*0.53, y: mouthY - S*0.025))
+            c.outline.setStroke(); m.lineWidth = lw; m.stroke()
+        }
+
+        if mood == .panic {
+            drawSweatAt(x: frame == 0 ? S*0.86 : S*0.14, y: S*0.74, S: S, outline: c.outline, lw: lw)
+        }
+        img.unlockFocus()
+        return img
+    }
+
+    // MARK: ───── 👾 怪兽：下宽上窄软糖形 + 凸起 ─────
+    private static func renderMonster(skin: Skin, mood: Mood, frame: Int, S: CGFloat) -> NSImage {
+        let img = NSImage(size: NSSize(width: S, height: S))
+        img.lockFocus()
+        let c = skin.colors
+        let lw = max(2, S * 0.024)
+
+        NSColor.black.withAlphaComponent(0.24).setFill()
+        NSBezierPath(ovalIn: NSRect(x: S*0.20, y: S*0.03, width: S*0.60, height: S*0.06)).fill()
+
+        // 软糖形(下宽上窄)：贝塞尔曲线手绘
+        let body = NSBezierPath()
+        body.move(to: NSPoint(x: S*0.50, y: S*0.94))
+        body.curve(to: NSPoint(x: S*0.10, y: S*0.45),
+                   controlPoint1: NSPoint(x: S*0.20, y: S*0.92),
+                   controlPoint2: NSPoint(x: S*0.10, y: S*0.70))
+        body.curve(to: NSPoint(x: S*0.18, y: S*0.18),
+                   controlPoint1: NSPoint(x: S*0.10, y: S*0.30),
+                   controlPoint2: NSPoint(x: S*0.10, y: S*0.20))
+        body.curve(to: NSPoint(x: S*0.50, y: S*0.06),
+                   controlPoint1: NSPoint(x: S*0.30, y: S*0.06),
+                   controlPoint2: NSPoint(x: S*0.36, y: S*0.06))
+        body.curve(to: NSPoint(x: S*0.82, y: S*0.18),
+                   controlPoint1: NSPoint(x: S*0.64, y: S*0.06),
+                   controlPoint2: NSPoint(x: S*0.70, y: S*0.06))
+        body.curve(to: NSPoint(x: S*0.90, y: S*0.45),
+                   controlPoint1: NSPoint(x: S*0.90, y: S*0.20),
+                   controlPoint2: NSPoint(x: S*0.90, y: S*0.30))
+        body.curve(to: NSPoint(x: S*0.50, y: S*0.94),
+                   controlPoint1: NSPoint(x: S*0.90, y: S*0.70),
+                   controlPoint2: NSPoint(x: S*0.80, y: S*0.92))
+        body.close()
+        c.body.setFill(); body.fill()
+        NSGraphicsContext.current!.saveGraphicsState()
+        body.addClip()
+        // 顶亮底暗
+        NSColor.white.withAlphaComponent(0.30).setFill()
+        NSBezierPath(ovalIn: NSRect(x: S*0.28, y: S*0.76, width: S*0.30, height: S*0.14)).fill()
+        c.bodyDk.withAlphaComponent(0.55).setFill()
+        NSBezierPath(rect: NSRect(x: 0, y: 0, width: S, height: S*0.18)).fill()
+        NSGraphicsContext.current!.restoreGraphicsState()
+        c.outline.setStroke(); body.lineWidth = lw; body.stroke()
+
+        // 独角(在头顶正中)
+        let horn = NSBezierPath()
+        horn.move(to: NSPoint(x: S*0.43, y: S*0.86))
+        horn.line(to: NSPoint(x: S*0.50, y: S*1.00))
+        horn.line(to: NSPoint(x: S*0.57, y: S*0.86))
+        horn.close()
+        c.accent.setFill(); horn.fill()
+        c.outline.setStroke(); horn.lineWidth = lw; horn.stroke()
+
+        // 两个圆球状鼓凸(肩膀位置)
+        for sign in [-1.0, 1.0] as [CGFloat] {
+            let cx = S*0.50 + sign * S*0.30
+            let p = NSBezierPath(ovalIn: NSRect(x: cx - S*0.06, y: S*0.40, width: S*0.12, height: S*0.12))
+            c.body.setFill(); p.fill()
+            c.outline.setStroke(); p.lineWidth = lw*0.7; p.stroke()
+        }
+
+        // 腮红
+        cheekDots(S*0.20, S*0.80, y: S*0.45, r: S*0.05, c: c)
+
+        // 眼睛
+        drawEyesAt(lx: S*0.36, rx: S*0.64, y: S*0.58, mood: mood, frame: frame, c: c, S: S, lw: lw)
+
+        // 鼻(小圆点)
+        let nr = S * 0.025
+        let nose = NSBezierPath(ovalIn: NSRect(x: S*0.50 - nr, y: S*0.48, width: nr*2, height: nr*2))
+        c.outline.setFill(); nose.fill()
+
+        // 嘴
+        let mouthY: CGFloat = S * 0.40
+        if mood == .panic {
+            let m = NSBezierPath(ovalIn: NSRect(x: S*0.42, y: mouthY - S*0.06, width: S*0.16, height: S*0.10))
+            rgb(0.90,0.25,0.20).setFill(); m.fill()
+            c.outline.setStroke(); m.lineWidth = lw; m.stroke()
+        } else if mood == .happy {
+            let m = NSBezierPath()
+            m.move(to: NSPoint(x: S*0.42, y: mouthY))
+            m.curve(to: NSPoint(x: S*0.58, y: mouthY),
+                    controlPoint1: NSPoint(x: S*0.45, y: mouthY - S*0.06),
+                    controlPoint2: NSPoint(x: S*0.55, y: mouthY - S*0.06))
+            m.line(to: NSPoint(x: S*0.42, y: mouthY))
+            m.close(); c.outline.setFill(); m.fill()
+        } else {
+            let m = NSBezierPath()
+            m.move(to: NSPoint(x: S*0.45, y: mouthY))
+            m.curve(to: NSPoint(x: S*0.55, y: mouthY),
+                    controlPoint1: NSPoint(x: S*0.47, y: mouthY - S*0.025),
+                    controlPoint2: NSPoint(x: S*0.53, y: mouthY - S*0.025))
+            c.outline.setStroke(); m.lineWidth = lw; m.stroke()
+        }
+
+        if mood == .panic {
+            drawSweatAt(x: frame == 0 ? S*0.92 : S*0.08, y: S*0.66, S: S, outline: c.outline, lw: lw)
+        }
+        img.unlockFocus()
+        return img
     }
 }

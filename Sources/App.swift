@@ -32,6 +32,8 @@ final class PetView: NSView {
     private var activity: ActivityState = .idle
     private var bubbleAnimTimer: Timer?
     private var bubbleDotPhase: Int = 0   // 0/1/2 控制 "." ".." "..."
+    private var dragMouseStart: NSPoint?  // 拖动起始的鼠标屏幕坐标
+    private var dragOriginStart: NSPoint? // 拖动起始的窗口原点
     var onRightClick: ((NSEvent) -> Void)?
     var onHoverChange: ((Bool) -> Void)?
     var onMoved: (() -> Void)?
@@ -110,6 +112,9 @@ final class PetView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         guard !frames.isEmpty else { return }
+        // 铺一层近透明的背景，让整个面板矩形都能接收点击(否则透明角落会穿透到桌面)
+        NSColor(white: 0, alpha: 0.02).setFill()
+        bounds.fill()
         // 卡通图自带投影与立体光照，直接绘制即可
         frames[frameIndex].draw(in: bounds, from: .zero, operation: .sourceOver,
                                 fraction: offline ? 0.45 : 1.0)
@@ -155,9 +160,22 @@ final class PetView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        onDragStart?()                      // 暂停 bob，避免和拖动冲突
-        window?.performDrag(with: event)   // performDrag 同步阻塞至拖动结束
-        onMoved?()                          // 拖动结束后更新基点并保存
+        onDragStart?()                          // 暂停 bob
+        dragMouseStart = NSEvent.mouseLocation
+        dragOriginStart = window?.frame.origin
+    }
+    override func mouseDragged(with event: NSEvent) {
+        guard let mStart = dragMouseStart,
+              let oStart = dragOriginStart,
+              let win = window else { return }
+        let now = NSEvent.mouseLocation
+        win.setFrameOrigin(NSPoint(x: oStart.x + (now.x - mStart.x),
+                                   y: oStart.y + (now.y - mStart.y)))
+    }
+    override func mouseUp(with event: NSEvent) {
+        dragMouseStart = nil
+        dragOriginStart = nil
+        onMoved?()                              // 更新基点 + 恢复 bob + 保存
     }
     override func rightMouseDown(with event: NSEvent) { onRightClick?(event) }
     override func mouseEntered(with event: NSEvent) { onHoverChange?(true) }
@@ -262,12 +280,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         petView.onRightClick = { [weak self] e in self?.showMenu(e) }
         petView.onHoverChange = { [weak self] hovering in self?.toggleBubble(hovering) }
-        petView.onDragStart = { [weak self] in self?.bobPaused = true }
+        petView.onDragStart = { [weak self] in
+            // 彻底停掉浮动计时器，避免拖动时被偷偷拽回
+            self?.bobTimer?.invalidate()
+            self?.bobTimer = nil
+            self?.bobPaused = true
+        }
         petView.onMoved = { [weak self] in
             guard let self = self else { return }
             self.petBase = self.panel.frame.origin   // 用户拖到哪儿，基点就在哪儿
             self.bobPaused = false
             self.savePosition()
+            self.startBob()                          // 重新启动浮动
         }
 
         // 恢复上次位置，没有则放屏幕右下角
