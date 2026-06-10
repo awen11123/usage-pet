@@ -70,8 +70,22 @@ open ClaudePet.app
 ```
 依赖：macOS 12+、Xcode 命令行工具（`swiftc`）。无第三方库。
 
+### 命令行 / CLI
+应用二进制同时是命令行工具——可在脚本 / Raycast / Alfred 里查用量，不弹宠物：
+```bash
+BIN=ClaudePet.app/Contents/MacOS/ClaudePet
+# 可选：装到 PATH
+ln -sf "$PWD/$BIN" /usr/local/bin/usagepet
+
+usagepet status          # Codex + 中转余额(纯文本)
+usagepet status --json   # 给脚本用的 JSON
+usagepet codex           # Codex 速率限额
+usagepet relays          # 列出已配置中转
+```
+> Claude 用量需要登录态(WebView)，CLI 模式暂只支持 Codex 与中转 API。
+
 ### 测试
-纯逻辑（燃尽预测 / 阈值 / 格式化 / 本地化）有零依赖单元测试（同样只需 `swiftc`，不用 Xcode）：
+纯逻辑（阈值 / 格式化 / 本地化 / sparkline）有零依赖单元测试（只需 `swiftc`，不用 Xcode）：
 ```bash
 ./test.sh
 ```
@@ -142,7 +156,9 @@ and `bubbleText()`. PRs for other AIs welcome.
 ## 代码结构 / Layout
 | 文件 | 作用 |
 |------|------|
-| `Sources/Cartoon.swift` | 卡通渲染器(Core Graphics 矢量) + 6 形象 + 4 心情帧 |
+| `Sources/Skins.swift` | 13 形象的物种/配色/注册表 |
+| `Sources/Cartoon.swift` | 卡通渲染器(Core Graphics 矢量 + 各物种造型) |
+| `Sources/CLI.swift` | 命令行模式(status / codex / relays) |
 | `Sources/Usage.swift` | Claude 数据模型 |
 | `Sources/Web.swift`   | Claude WebKit 数据源(登录+取数) |
 | `Sources/Codex.swift` | Codex `app-server` RPC 数据源 |

@@ -13,6 +13,7 @@ swiftc -O \
     Sources/History.swift \
     Sources/I18n.swift \
     Sources/Notifier.swift \
+    Sources/Skins.swift \
     Sources/Cartoon.swift \
     Sources/Activity.swift \
     Sources/ModelInfo.swift \
@@ -22,6 +23,7 @@ swiftc -O \
     Sources/Relay.swift \
     Sources/Web.swift \
     Sources/App.swift \
+    Sources/CLI.swift \
     Sources/main.swift \
     -o "$BIN"
 
@@ -41,11 +43,20 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>LSMinimumSystemVersion</key><string>12.0</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
 </dict>
 </plist>
 PLIST
+
+echo "==> 拷贝 App 图标"
+mkdir -p "$APP/Contents/Resources"
+[ -f Resources/AppIcon.icns ] && cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 echo "==> 自签名"
 codesign --force --deep --sign - "$APP" 2>/dev/null || true
 
 echo "==> 完成: $(pwd)/$APP"
+echo ""
+echo "命令行用法(可选)："
+echo "  ./ClaudePet.app/Contents/MacOS/ClaudePet status"
+echo "  # 装到 PATH： ln -sf \"$(pwd)/$APP/Contents/MacOS/ClaudePet\" /usr/local/bin/usagepet"
