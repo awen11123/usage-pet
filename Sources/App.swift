@@ -338,6 +338,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if let vf = NSScreen.main?.visibleFrame {
             petBase = NSPoint(x: vf.maxX - side - 40, y: vf.minY + 60)
         }
+        // 夹紧：若上次的屏幕已拔掉/分辨率变了，避免宠物落到屏幕外找不回
+        petBase = clampToVisibleScreen(petBase, side: side)
         panel.setFrameOrigin(petBase)
         panel.orderFront(nil)
         startBob()
@@ -348,6 +350,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func ensureWeb() { if web == nil { web = ClaudeWeb() } }
+
+    /// 若点不在任何屏幕的可见区域内，则移到主屏右下角
+    func clampToVisibleScreen(_ p: NSPoint, side: CGFloat) -> NSPoint {
+        let onScreen = NSScreen.screens.contains { s in
+            s.visibleFrame.intersects(NSRect(x: p.x, y: p.y, width: side, height: side))
+        }
+        if onScreen { return p }
+        if let vf = NSScreen.main?.visibleFrame {
+            return NSPoint(x: vf.maxX - side - 40, y: vf.minY + 60)
+        }
+        return p
+    }
 
     func savePosition() {
         UserDefaults.standard.set(Double(petBase.x), forKey: "petX")

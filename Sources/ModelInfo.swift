@@ -83,14 +83,20 @@ enum ModelInfo {
         return nil
     }
 
-    /// 读文件(末尾往前)找第一个 accept 接受的 model
+    /// 读文件**末尾约 32KB**(而非整文件)，从后往前找第一个 accept 接受的 model
     private static func lastAcceptedModel(path: String,
                                           accept: (String) -> Bool,
                                           extract: ([String: Any]) -> String?) -> String? {
-        guard let content = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
-        for line in content.split(separator: "\n").reversed() {
-            guard let data = line.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard let h = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? h.close() }
+        let size = (try? h.seekToEnd()) ?? 0
+        let chunk: UInt64 = min(32_768, size)
+        try? h.seek(toOffset: size - chunk)
+        guard let data = try? h.read(upToCount: Int(chunk)),
+              let text = String(data: data, encoding: .utf8) else { return nil }
+        for line in text.split(separator: "\n").reversed() {
+            guard let d = line.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any]
             else { continue }
             if let m = extract(obj), !m.isEmpty, accept(m) { return m }
         }
