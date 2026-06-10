@@ -378,32 +378,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: 闲置浮动(让宠物「呼吸」)
+    // 用相位累加 + 振幅渐变：状态/心情切换、拖动结束后都平滑过渡，不会突跳。
+    private var bobPhase: Double = 0      // 主摆动相位(累加，换周期不跳变)
+    private var tremblePhase: Double = 0  // 高频颤动相位
+    private var curAmp: Double = 0        // 当前生效的振幅(向目标渐变)
+    private var curShake: Double = 0
+    private var curSway: Double = 0
+    private var lastTick: Date?
+
     func startBob() {
         bobTimer?.invalidate()
-        bobStart = Date()
+        // 振幅从 0 渐入，拖动结束/启动时不会瞬移
+        curAmp = 0; curShake = 0; curSway = 0
+        bobPhase = 0; tremblePhase = 0
+        lastTick = nil
         bobTimer = Timer.scheduledTimer(withTimeInterval: 1.0/30.0, repeats: true) { [weak self] _ in
             self?.tickBob()
         }
     }
     func tickBob() {
         guard !bobPaused else { return }
-        let t = Date().timeIntervalSince(bobStart)
+        let now = Date()
+        let dt = min(0.1, now.timeIntervalSince(lastTick ?? now))   // 帧间隔(防睡眠后大跳)
+        lastTick = now
         let unit = Double(petScale)
-        // (垂直振幅, 周期, 水平随机抖动, 水平平滑摆动)
-        let amp, period, hShake, hSway: Double
+
+        // 目标参数：(垂直振幅, 周期, 高频颤动幅度, 水平平滑摆动幅度)
+        let amp, period, shake, sway: Double
         switch activityState {
         case .thinking:
-            // Claude 在思考：缓慢左右摇头 + 几乎不上下(像在沉思)
-            amp = unit * 0.18; period = 1.1; hShake = 0; hSway = unit * 0.40
+            amp = unit * 0.18; period = 1.1; shake = 0; sway = unit * 0.40
         case .working:
-            // 你/工具在动作：快速点头 + 小幅左右抖
-            amp = unit * 0.50; period = 0.40; hShake = unit * 0.15; hSway = 0
+            amp = unit * 0.50; period = 0.40; shake = unit * 0.12; sway = 0
         case .justDone:
-            // 刚结束：大幅度跳动(松口气)
-            amp = unit * 0.95; period = 0.60; hShake = 0; hSway = 0
+            amp = unit * 0.95; period = 0.60; shake = 0; sway = 0
         case .idle:
-            hShake = (currentMood == .panic) ? unit * 0.30 : 0
-            hSway = 0
+            shake = (currentMood == .panic) ? unit * 0.25 : 0
+            sway = 0
             switch currentMood {
             case .happy:   amp = unit * 0.6; period = 1.4
             case .neutral: amp = unit * 0.4; period = 2.2
@@ -411,11 +422,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .panic:   amp = unit * 0.7; period = 0.35
             }
         }
-        let phase = t * 2 * .pi / period
-        let dy = sin(phase) * amp
-        let dxJit = hShake > 0 ? Double.random(in: -hShake...hShake) : 0
-        let dxSway = hSway != 0 ? sin(phase + .pi/2) * hSway : 0
-        panel.setFrameOrigin(NSPoint(x: petBase.x + dxJit + dxSway, y: petBase.y + dy))
+
+        // 相位累加(换周期时连续)；振幅向目标渐变(约 0.3 秒到位)
+        bobPhase += dt * 2 * .pi / period
+        tremblePhase += dt * 2 * .pi * 9     // 颤动固定 9Hz 平滑正弦
+        let ease = min(1, dt * 10)
+        curAmp   += (amp   - curAmp)   * ease
+        curShake += (shake - curShake) * ease
+        curSway  += (sway  - curSway)  * ease
+
+        let dy = sin(bobPhase) * curAmp
+        let dxTremble = curShake > 0.01 ? sin(tremblePhase) * curShake : 0
+        let dxSway = curSway > 0.01 ? sin(bobPhase + .pi/2) * curSway : 0
+        panel.setFrameOrigin(NSPoint(x: petBase.x + dxTremble + dxSway, y: petBase.y + dy))
     }
 
     /// 每 2 秒扫一次会话日志，缓存活动状态(避免 30Hz 命中文件系统)
